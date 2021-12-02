@@ -24,12 +24,14 @@ use libp2p::{
     self, GossipsubMessage, IdentTopic, MessageAuthenticity, MessageId,
     ValidationMode,
   },
-  identity, Multiaddr, PeerId,
+  identity,
+  swarm::SwarmEvent,
+  Multiaddr, PeerId,
 };
-use libp2p_swarm::SwarmEvent;
+
 use structopt::StructOpt;
 use tokio::sync::mpsc::unbounded_channel;
-use tracing::{info, trace, Level, error};
+use tracing::{error, info, trace, Level};
 
 static DEFAULT_BOOTSTRAP_NODE: &str = "/dnsaddr/bootstrap.libp2p.io";
 
@@ -101,15 +103,6 @@ async fn main() -> Result<()> {
     // subscribes to our topic
     gossipsub.subscribe(&topic).unwrap();
 
-    // add an explicit peer if one was provided
-    if let Some(explicit) = std::env::args().nth(2) {
-      let explicit = explicit.clone();
-      match explicit.parse() {
-        Ok(id) => gossipsub.add_explicit_peer(&id),
-        Err(err) => println!("Failed to parse explicit peer id: {:?}", err),
-      }
-    }
-
     // build the swarm
     libp2p::Swarm::new(transport, gossipsub, local_peer_id)
   };
@@ -118,6 +111,12 @@ async fn main() -> Result<()> {
   swarm
     .listen_on("/ip4/0.0.0.0/tcp/4001".parse().unwrap())
     .unwrap();
+
+  // dial all bootstrap nodes
+  opts
+    .bootstrap
+    .into_iter()
+    .for_each(|addr| swarm.dial(addr).unwrap());
 
   let (msg_tx, mut msg_rx) = unbounded_channel::<String>();
 

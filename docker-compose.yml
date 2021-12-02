@@ -1,0 +1,27 @@
+version: '3'
+
+services:
+  node_0:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: /home/episub-node --topic t0 -v
+    networks:
+      testing_net:
+        ipv4_address: 172.28.1.2
+
+  node_n:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: /home/episub-node --bootstrap /ip4/172.28.1.2/tcp/4001 --topic t0 -v
+    networks:
+      testing_net:
+        
+
+networks:
+  testing_net:
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.28.0.0/16
