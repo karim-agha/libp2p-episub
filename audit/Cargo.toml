@@ -1,25 +1,21 @@
 [package]
-name = "libp2p-episub"
+name = "audit-node"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.56.1"
 authors = ["Karim Agha <karim.dev@gmail.com>"]
 license = "MIT"
-description = "Episub: Proximity Aware Epidemic PubSub for libp2p"
+description = "P2P network monitoring environment for Episub"
 homepage = "https://github.com/terra-money/libp2p-episub"
 repository = "https://github.com/terra-money/libp2p-episub"
 keywords = ["peer-to-peer", "libp2p", "networking"]
 categories = ["network-programming", "asynchornous"]
 
 [dependencies]
-futures = "0.3.18"
-libp2p-core = "0.30.0"
-libp2p-swarm = "0.32.0"
+anyhow = "1.0.51"
 tracing = "0.1.29"
-
-[dev-dependencies]
-
-
-[workspace]
-members = [".", "node", "audit"]
-default-members = [".", "node", "audit"]
+headers = "0.3"
+tracing-subscriber = { version="0.3", features = ["env-filter"] }
+tokio = { version = "1.14.0", features = ["full"] }
+tower-http = { version = "0.2.0", features = ["fs", "trace"] }
+axum = { version = "0.4", features = ["ws", "json", "headers"] }

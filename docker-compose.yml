@@ -1,11 +1,21 @@
 version: '3'
 
 services:
+  node_audit:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ./audit-node
+    networks:
+      testing_net:
+        ipv4_address: 172.28.1.1
+    ports:
+      - "80:80"
   node_0:
     build:
       context: .
       dockerfile: Dockerfile
-    command: /home/episub-node --topic t0 -v
+    command: ./episub-node --topic t0 -v
     networks:
       testing_net:
         ipv4_address: 172.28.1.2
@@ -14,7 +24,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    command: /home/episub-node --bootstrap /ip4/172.28.1.2/tcp/4001 --topic t0 -v
+    command: ./episub-node --bootstrap /ip4/172.28.1.2/tcp/4001 --topic t0 -v
     networks:
       testing_net:
         
