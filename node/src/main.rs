@@ -1,5 +1,5 @@
 //!
-//! Terra P2P Protocols Lab
+//! P2P Protocols Lab
 //!
 //! This executable is the entrypoint to running the development version of libp2p-episub.
 //! Using this executable you can crate and test the behavior of p2p gossip networks.
@@ -13,6 +13,8 @@
 use std::{
   collections::hash_map::DefaultHasher,
   hash::{Hash, Hasher},
+  intrinsics::transmute,
+  mem::size_of,
   time::Duration,
 };
 
@@ -29,8 +31,9 @@ use libp2p::{
   Multiaddr, PeerId,
 };
 
+use libp2p_episub::{NodeEvent, NodeUpdate};
 use structopt::StructOpt;
-use tokio::sync::mpsc::unbounded_channel;
+use tokio::{net::UdpSocket, sync::mpsc::unbounded_channel};
 use tracing::{error, info, trace, Level};
 
 static DEFAULT_BOOTSTRAP_NODE: &str = "/dnsaddr/bootstrap.libp2p.io";
@@ -50,6 +53,15 @@ struct CliOptions {
 
   #[structopt(long, default_value=DEFAULT_BOOTSTRAP_NODE, about = "p2p bootstrap peers")]
   bootstrap: Vec<Multiaddr>,
+
+  #[structopt(long, about = "p2p audit node")]
+  audit: String,
+}
+
+async fn send_update(socket: &UdpSocket, update: NodeUpdate) -> Result<()> {
+  let buf: [u8; size_of::<NodeUpdate>()] = unsafe { transmute(update) };
+  socket.send(&buf).await?;
+  Ok(())
 }
 
 #[tokio::main]
@@ -74,6 +86,20 @@ async fn main() -> Result<()> {
   // Set up an encrypted TCP Transport over the Mplex and Yamux protocols
   let transport = libp2p::development_transport(local_key.clone()).await?;
   let topic = IdentTopic::new(&opts.topic);
+
+  info!("audit addr: {:?}", opts.audit);
+  let audit_sock = UdpSocket::bind("0.0.0.0:9000").await?;
+  audit_sock.connect(opts.audit.as_str()).await?;
+
+  send_update(
+    &audit_sock,
+    NodeUpdate {
+      node_id: local_peer_id,
+      peer_id: local_peer_id,
+      event: NodeEvent::Up,
+    },
+  )
+  .await?;
 
   // Create a Swarm to manage peers and events
   let mut swarm = {
@@ -118,19 +144,22 @@ async fn main() -> Result<()> {
     .into_iter()
     .for_each(|addr| swarm.dial(addr).unwrap());
 
-  let (msg_tx, mut msg_rx) = unbounded_channel::<String>();
-
+  let (msg_tx, mut msg_rx) = unbounded_channel::<Vec<u8>>();
+  let msg_tx_clone = msg_tx.clone();
   tokio::spawn(async move {
     let local_peer_id = local_peer_id.clone();
     loop {
       // every 5 seconds send a message to the gossip topic
       tokio::time::sleep(Duration::from_secs(5)).await;
       msg_tx
-        .send(format!(
-          "I am {}, sending message at: {}",
-          local_peer_id,
-          Utc::now().to_rfc2822()
-        ))
+        .send(
+          format!(
+            "I am {}, sending message at: {}",
+            local_peer_id,
+            Utc::now().to_rfc2822()
+          )
+          .into_bytes(),
+        )
         .unwrap();
       info!("Broadcasted message from local peer");
     }
@@ -147,15 +176,36 @@ async fn main() -> Result<()> {
             message,
           }) => {
             info!("Gossip message {} from {}: {:?}", id, peer, message);
+
+            if let Ok(addr) = Multiaddr::try_from(message.data) {
+              info!("Received address {}: {:?}", addr.clone(), swarm.dial(addr.clone()));
+            }
+
+            send_update(&audit_sock, NodeUpdate {
+              node_id: local_peer_id,
+              peer_id: peer,
+              event: NodeEvent::Message
+            }).await?;
+          }
+          SwarmEvent::Behaviour(gossipsub::GossipsubEvent::Subscribed {
+            peer_id,
+            topic
+          }) => {
+            info!("Peer {} subscribed to topic {}", peer_id, topic);
           }
           SwarmEvent::NewListenAddr { address, .. } => {
             info!("Listening on {}", address);
+            msg_tx_clone.send(address.to_vec()).unwrap();
           }
           _ => trace!("swarm event: {:?}", event),
         }
       },
       Some(sendmsg) = msg_rx.recv() => {
-        if let Err(e) = swarm.behaviour_mut().publish(topic.clone(), sendmsg.as_bytes()) {
+        for p in swarm.behaviour().all_mesh_peers() {
+          info!("I know about peer {:?}", p);
+        }
+
+        if let Err(e) = swarm.behaviour_mut().publish(topic.clone(), sendmsg) {
           error!("Failed publishing Gossipsub message: {:?}", e);
         }
       }
