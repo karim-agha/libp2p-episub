@@ -1,3 +1,12 @@
+mod behaviour;
+mod codec;
+mod error;
+mod handler;
+mod protocol;
+mod rpc;
+
+pub use behaviour::{Config, Episub, EpisubEvent};
+
 use libp2p_core::PeerId;
 use serde::Serialize;
 

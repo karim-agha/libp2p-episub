@@ -10,17 +10,31 @@
 //! everything in one place.
 //!
 
-use std::{intrinsics::transmute, mem::size_of, time::Duration};
+use std::{
+  collections::hash_map::DefaultHasher,
+  hash::{Hash, Hasher},
+  intrinsics::transmute,
+  mem::size_of,
+  time::Duration,
+};
 
 use anyhow::Result;
 use chrono::Utc;
 use futures::StreamExt;
-use libp2p::{identity, swarm::SwarmEvent, Multiaddr, PeerId};
+use libp2p::{
+  gossipsub::{
+    self, GossipsubMessage, IdentTopic, MessageAuthenticity, MessageId,
+    ValidationMode,
+  },
+  identity,
+  swarm::SwarmEvent,
+  Multiaddr, PeerId,
+};
 
-use libp2p_episub::{Episub, NodeEvent, NodeUpdate};
+use libp2p_episub::{NodeEvent, NodeUpdate};
 use structopt::StructOpt;
 use tokio::{net::UdpSocket, sync::mpsc::unbounded_channel};
-use tracing::{info, trace, Level};
+use tracing::{error, info, trace, Level};
 
 static DEFAULT_BOOTSTRAP_NODE: &str = "/dnsaddr/bootstrap.libp2p.io";
 
@@ -71,6 +85,7 @@ async fn main() -> Result<()> {
 
   // Set up an encrypted TCP Transport over the Mplex and Yamux protocols
   let transport = libp2p::development_transport(local_key.clone()).await?;
+  let topic = IdentTopic::new(&opts.topic);
 
   info!("audit addr: {:?}", opts.audit);
   let audit_sock = UdpSocket::bind("0.0.0.0:9000").await?;
@@ -88,11 +103,34 @@ async fn main() -> Result<()> {
 
   // Create a Swarm to manage peers and events
   let mut swarm = {
-    // build the behaviour
-    let episub = Episub::new();
+    // To content-address message, we can take the hash of message and use it as an ID.
+    let message_id_fn = |message: &GossipsubMessage| {
+      let mut s = DefaultHasher::new();
+      message.data.hash(&mut s);
+      MessageId::from(s.finish().to_string())
+    };
+
+    // Set a custom gossipsub
+    let gossipsub_config = gossipsub::GossipsubConfigBuilder::default()
+        .heartbeat_interval(Duration::from_secs(10)) // This is set to aid debugging by not cluttering the log space
+        .validation_mode(ValidationMode::Strict) // This sets the kind of message validation. The default is Strict (enforce message signing)
+        .message_id_fn(message_id_fn) // content-address messages. No two messages of the
+        .mesh_outbound_min(1)
+        // same content will be propagated.
+        .build()
+        .expect("Valid config");
+    // build a gossipsub network behaviour
+    let mut gossipsub: gossipsub::Gossipsub = gossipsub::Gossipsub::new(
+      MessageAuthenticity::Signed(local_key),
+      gossipsub_config,
+    )
+    .expect("Correct configuration");
+
+    // subscribes to our topic
+    gossipsub.subscribe(&topic).unwrap();
 
     // build the swarm
-    libp2p::Swarm::new(transport, episub, local_peer_id)
+    libp2p::Swarm::new(transport, gossipsub, local_peer_id)
   };
 
   // Listen on all interfaces and whatever port the OS assigns
@@ -132,8 +170,28 @@ async fn main() -> Result<()> {
     tokio::select! {
       Some(event) = swarm.next() => {
         match event {
-          SwarmEvent::Behaviour(b) => {
-            info!("swarm behaviour: {:?}", b);
+          SwarmEvent::Behaviour(gossipsub::GossipsubEvent::Message {
+            propagation_source: peer,
+            message_id: id,
+            message,
+          }) => {
+            info!("Gossip message {} from {}: {:?}", id, peer, message);
+
+            if let Ok(addr) = Multiaddr::try_from(message.data) {
+              info!("Received address {}: {:?}", addr.clone(), swarm.dial(addr.clone()));
+            }
+
+            send_update(&audit_sock, NodeUpdate {
+              node_id: local_peer_id,
+              peer_id: peer,
+              event: NodeEvent::Message
+            }).await?;
+          }
+          SwarmEvent::Behaviour(gossipsub::GossipsubEvent::Subscribed {
+            peer_id,
+            topic
+          }) => {
+            info!("Peer {} subscribed to topic {}", peer_id, topic);
           }
           SwarmEvent::IncomingConnection { send_back_addr, local_addr } => {
             msg_tx_clone.send(send_back_addr.to_vec()).unwrap();
@@ -147,7 +205,13 @@ async fn main() -> Result<()> {
         }
       },
       Some(sendmsg) = msg_rx.recv() => {
-        info!("placeholder for publishing message with content: {:?}", sendmsg);
+        for p in swarm.behaviour().all_mesh_peers() {
+          info!("I know about peer {:?}", p);
+        }
+
+        if let Err(e) = swarm.behaviour_mut().publish(topic.clone(), sendmsg) {
+          error!("Failed publishing Gossipsub message: {:?}", e);
+        }
       }
     };
   }
