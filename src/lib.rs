@@ -4,6 +4,7 @@ mod error;
 mod handler;
 mod protocol;
 mod rpc;
+mod view;
 
 pub use behaviour::{Config, Episub, EpisubEvent};
 

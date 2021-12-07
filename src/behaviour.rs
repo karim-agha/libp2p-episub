@@ -4,13 +4,15 @@ use libp2p_core::{
   connection::ConnectionId, ConnectedPoint, Multiaddr, PeerId,
 };
 use libp2p_swarm::{
-  NetworkBehaviour, NetworkBehaviourAction, PollParameters, SubstreamProtocol, IntoProtocolsHandler,
+  IntoProtocolsHandler, NetworkBehaviour, NetworkBehaviourAction,
+  PollParameters, SubstreamProtocol,
 };
 use tracing::debug;
 
 use crate::{
   handler::{EpisubHandler, HandlerEvent},
   protocol::EpisubProtocol,
+  view::PartialView,
 };
 
 /// Configuration paramaters for Episub
@@ -29,12 +31,6 @@ impl Default for Config {
   }
 }
 
-/// defines a peer with a list of all known addresses that can be used to
-struct AddresablePeer {
-  pub peer_id: PeerId,
-  pub addresses: Vec<Multiaddr>,
-}
-
 /// Event that can be emitted by the episub behaviour.
 #[derive(Debug)]
 pub enum EpisubEvent {
@@ -51,15 +47,17 @@ pub enum EpisubEvent {
 ///   2. Epidemic Broadcast Trees: For constructing efficient broadcast trees and efficient content dessamination
 ///   3. GoCast: Gossip-Enhanced Overlay Multicast for Fast and Dependable Group Communication
 ///
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Episub {
   config: Config,
+  view: PartialView,
 }
 
 impl Episub {
   pub fn new() -> Self {
     Self {
       config: Config::default(),
+      view: PartialView::default(),
     }
   }
 }
