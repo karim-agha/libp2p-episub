@@ -8,7 +8,7 @@ mod view;
 
 pub use behaviour::{Config, Episub, EpisubEvent};
 
-use libp2p_core::PeerId;
+use libp2p::core::PeerId;
 use serde::Serialize;
 
 #[derive(Debug, Copy, Clone, Serialize)]

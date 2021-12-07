@@ -1,4 +1,10 @@
-use libp2p_core::{Multiaddr, PeerId, Connected};
+//! [HyParView]: a membership protocol for reliable gossip-based broadcast
+//! [HyParView]: http://asc.di.fct.unl.pt/~jleitao/pdf/dsn07-leitao.pdf
+
+use std::collections::{HashSet, VecDeque};
+
+use crate::error::MeshError;
+use libp2p::core::{Connected, ConnectedPoint, Multiaddr, PeerId};
 
 /// A partial view is a set of node identiﬁers maintained locally at each node that is a small
 /// subset of the identiﬁers of all nodes in the system (ideally, of logarithmic size with the
@@ -22,57 +28,95 @@ use libp2p_core::{Multiaddr, PeerId, Connected};
 ///   - and a larger passive view, of size k(log(n) + c).
 /// where n is the total number of online nodes participating in the protocol.
 #[derive(Debug)]
-pub struct PartialView {
-  active: usize,
-  passive: usize,
-  total: usize,
+pub struct HyParView {
+  active: HashSet<Connected>,
+  passive: HashSet<AddressablePeer>,
 }
 
-impl Default for PartialView {
+impl Default for HyParView {
   fn default() -> Self {
     Self {
-      active: 1,
-      passive: 6,
-      total: 10_000,
+      active: HashSet::new(),
+      passive: HashSet::new(),
     }
   }
 }
 
 /// Access to Partial View network overlays
-impl PartialView {
-  /// The active views of all nodes create an overlay that is used for message dissemination. 
-  /// Links in the overlay are symmetric, this means that each node keeps an open TCP connection 
+impl HyParView {
+  /// The active views of all nodes create an overlay that is used for message dissemination.
+  /// Links in the overlay are symmetric, this means that each node keeps an open TCP connection
   /// to every other node in its active view.
-  /// 
+  ///
   /// The active view is maintained using a reactive strategy, meaning nodes are remove
   /// when they fail.
-  pub fn active() -> impl Iterator<Item = Connected> {
-    std::iter::empty()
+  pub fn active(&self) -> impl Iterator<Item = &Connected> {
+    self.active.iter()
   }
 
-  /// The goal of the passive view is to maintain a list of nodes that can be used to 
+  /// The goal of the passive view is to maintain a list of nodes that can be used to
   /// replace failed members of the active view. The passive view is not used for message
   /// dissemination.
-  /// 
-  /// The passive view is maintained using a cyclic strategy. Periodically, each node 
+  ///
+  /// The passive view is maintained using a cyclic strategy. Periodically, each node
   /// performs shuffle operation with one of its neighbors in order to update its passive view.
-  pub fn passive() -> impl Iterator<Item = AddressablePeer> {
-    std::iter::empty()
+  pub fn passive(&self) -> impl Iterator<Item = &AddressablePeer> {
+    self.passive.iter()
+  }
+
+  pub fn all_peers_id(&self) -> impl Iterator<Item = &PeerId> {
+    self
+      .active()
+      .map(|a| &a.peer_id)
+      .chain(self.passive().map(|p| &p.peer_id))
   }
 }
 
 /// Manipulation of PartialView nodes
-impl PartialView {
+impl HyParView {
   /// Removes a node entirely from the all views, active and passive.
   /// This happens when we know that a node has died, or it has been
   /// banned for violating the protocol or other security reasons.
   pub fn remove(peer: PeerId) -> Option<AddressablePeer> {
-    todo!()
+    todo!();
+  }
+
+  /// Removes a node from the active list and moves it to the passive list.
+  /// This happens when for example the active view is full and new nodes
+  /// are requesting to join the topic. Returns true if the peer was
+  /// demoted to the passive view, otherwise false if the peer was not in
+  /// the active view and nothing changed.
+  pub async fn demote_active(peer: PeerId) -> Result<bool, MeshError> {
+    todo!();
+  }
+
+  /// Promotes a node from the passive list to the active list and removes
+  /// it from the passive view. Returns true if the node was found in the
+  /// passive view and was successfully moved to the active view, otherwise
+  /// returns false if the node was not present in the passive view, or
+  /// we failed connecting to the peer.
+  pub async fn promote_passive(peer: PeerId) -> Result<bool, MeshError> {
+    todo!();
   }
 }
 
 /// This struct uniquely identifies a node on the internet.
+#[derive(Debug, Clone)]
 pub struct AddressablePeer {
   pub peer_id: PeerId,
-  pub address: Multiaddr
+  pub address: Multiaddr,
+}
+
+impl From<&Connected> for AddressablePeer {
+  fn from(c: &Connected) -> Self {
+    Self {
+      peer_id: c.peer_id,
+      address: match &c.endpoint {
+        ConnectedPoint::Dialer { address } => address.clone(),
+        ConnectedPoint::Listener { send_back_addr, .. } => {
+          send_back_addr.clone()
+        }
+      },
+    }
+  }
 }

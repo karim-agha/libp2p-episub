@@ -1,29 +1,22 @@
+use crate::{
+  codec::EpisubCodec, error::EpisubHandlerError, protocol::EpisubProtocol, rpc,
+};
 use asynchronous_codec::Framed;
 use futures::StreamExt;
-use libp2p_core::{InboundUpgrade, OutboundUpgrade};
-use libp2p_swarm::{
-  KeepAlive, NegotiatedSubstream, ProtocolsHandler, ProtocolsHandlerEvent,
-  ProtocolsHandlerUpgrErr, SubstreamProtocol,
+use libp2p::{
+  core::{InboundUpgrade, OutboundUpgrade},
+  swarm::{
+    KeepAlive, NegotiatedSubstream, ProtocolsHandler, ProtocolsHandlerEvent,
+    ProtocolsHandlerUpgrErr, SubstreamProtocol,
+  },
 };
 use std::task::{Context, Poll};
 use tracing::{debug, info, warn};
 
-use crate::{
-  codec::EpisubCodec, error::EpisubHandlerError, protocol::EpisubProtocol, rpc,
-};
-
 #[derive(Debug, Clone)]
 pub enum HandlerEvent {
-  Message,
+  Message(rpc::Rpc),
   PeerKind,
-}
-
-/// A message esnt from the behaviour to the handler.
-#[derive(Debug, Clone)]
-pub enum EpisubHandlerIn {
-  Message,
-  JoinedMesh,
-  LeftMesh,
 }
 
 /// State of the inbound substream, opened either by us or by the remote.
@@ -76,7 +69,7 @@ impl EpisubHandler {
 }
 
 impl ProtocolsHandler for EpisubHandler {
-  type InEvent = EpisubHandlerIn;
+  type InEvent = rpc::Rpc;
   type OutEvent = HandlerEvent;
   type Error = EpisubHandlerError;
   type InboundOpenInfo = ();

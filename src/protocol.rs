@@ -1,9 +1,9 @@
 use crate::{codec::EpisubCodec, error::EpisubHandlerError};
 use asynchronous_codec::Framed;
 use futures::{future, AsyncRead, AsyncWrite};
-use libp2p_core::{InboundUpgrade, OutboundUpgrade, UpgradeInfo};
-use tracing::debug;
+use libp2p::core::{InboundUpgrade, OutboundUpgrade, UpgradeInfo};
 use std::{future::Future, iter, pin::Pin};
+use tracing::debug;
 use unsigned_varint::codec;
 
 #[derive(Debug, Clone)]
