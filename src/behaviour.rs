@@ -11,7 +11,7 @@ use libp2p::{
   },
 };
 use std::{
-  collections::{HashMap, VecDeque},
+  collections::{HashMap, HashSet, VecDeque},
   task::{Context, Poll},
   time::Duration,
 };
@@ -70,8 +70,12 @@ pub struct Episub {
   /// Per-topic node membership
   topics: HashMap<String, HyParView>,
 
+  /// Topics that we want to join, but haven't found a node
+  /// to connect to.
+  pending_joins: HashSet<String>,
+
   /// events that need to yielded to the outside when polling
-  events: VecDeque<EpisubNetworkBehaviourAction>,
+  out_events: VecDeque<EpisubNetworkBehaviourAction>,
 }
 
 impl Episub {
@@ -79,7 +83,8 @@ impl Episub {
     Self {
       config: Config::default(),
       topics: HashMap::new(),
-      events: VecDeque::new(),
+      pending_joins: HashSet::new(),
+      out_events: VecDeque::new(),
     }
   }
 }
@@ -89,20 +94,14 @@ impl Episub {
   ///
   /// if the connection to the peer is dropped or otherwise the peer becomes
   /// unreachable, then this event is silently dropped.
-  fn send_message(
-    &mut self,
-    peer_id: PeerId,
-    message: rpc::Rpc,
-  ) -> Result<(), PublishError> {
-    Ok(
-      self
-        .events
-        .push_back(NetworkBehaviourAction::NotifyHandler {
-          peer_id,
-          event: message,
-          handler: NotifyHandler::Any,
-        }),
-    )
+  fn send_message(&mut self, peer_id: PeerId, message: rpc::Rpc) {
+    self
+      .out_events
+      .push_back(NetworkBehaviourAction::NotifyHandler {
+        peer_id,
+        event: message,
+        handler: NotifyHandler::Any,
+      })
   }
 }
 
@@ -119,8 +118,9 @@ impl Episub {
   /// subscribing to a topic means, is that we will not ignore messages from peers that
   /// are sent for this topic id, this includes HyParView control messages or data messages.
   ///
-  /// When subscribing to a new topic, and the active and passive views are not full yet, then
-  /// a JOIN(topic) message will be sent to any peer that is connecting or dialed by this node.
+  /// When subscribing to a new topic, we place the topic in the pending_joins collection that
+  /// will send a join request to any node we connect to, until one of the nodes responds with
+  /// another JOIN or FORWARDJOIN message.
   pub fn subscribe(
     &mut self,
     topic: String,
@@ -130,7 +130,8 @@ impl Episub {
       Ok(false)
     } else {
       debug!("Subscribing to topic: {}", topic);
-      self.topics.insert(topic, HyParView::default());
+      self.topics.insert(topic.clone(), HyParView::default());
+      self.pending_joins.insert(topic);
       Ok(true)
     }
   }
@@ -152,6 +153,7 @@ impl Episub {
       Ok(false)
     } else {
       debug!("unsubscribing from topic: {}", topic);
+      self.pending_joins.remove(&topic);
       if let Some(view) = self.topics.remove(&topic) {
         for peer in view.all_peers_id() {
           trace!("disconnecting from peer {} on topic {}", peer, topic);
@@ -163,7 +165,7 @@ impl Episub {
                 alive: false, // remove from peers passive view as well
               })),
             },
-          )?;
+          );
         }
       }
 
@@ -192,7 +194,23 @@ impl NetworkBehaviour for Episub {
       "Connection to peer {} established on endpoint {:?}",
       peer_id, endpoint
     );
+
+    // check if we are in the process of joining a topic, if so, for
+    // each topic that has not found its cluster, send a join request 
+    // to every node that connects with us.
+    self.pending_joins.clone().into_iter().for_each(|topic| {
+      self.send_message(
+        peer_id.clone(),
+        rpc::Rpc {
+          topic: topic.clone(),
+          action: Some(rpc::rpc::Action::Join(rpc::Join {
+            ttl: self.config.active_walk_length as u32,
+          })),
+        },
+      );
+    });
   }
+
   fn inject_connection_closed(
     &mut self,
     peer_id: &PeerId,
@@ -221,12 +239,11 @@ impl NetworkBehaviour for Episub {
 
   fn poll(
     &mut self,
-    cx: &mut Context<'_>,
-    params: &mut impl PollParameters,
+    _: &mut Context<'_>,
+    _: &mut impl PollParameters,
   ) -> Poll<NetworkBehaviourAction<Self::OutEvent, Self::ProtocolsHandler>> {
-
     // bubble up any outstanding events in fifo order
-    if let Some(event) = self.events.pop_front() {
+    if let Some(event) = self.out_events.pop_front() {
       return Poll::Ready(event);
     }
 

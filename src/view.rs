@@ -77,7 +77,7 @@ impl HyParView {
   /// Removes a node entirely from the all views, active and passive.
   /// This happens when we know that a node has died, or it has been
   /// banned for violating the protocol or other security reasons.
-  pub fn remove(peer: PeerId) -> Option<AddressablePeer> {
+  pub fn remove(&mut self, peer: PeerId) -> Option<AddressablePeer> {
     todo!();
   }
 
@@ -86,7 +86,7 @@ impl HyParView {
   /// are requesting to join the topic. Returns true if the peer was
   /// demoted to the passive view, otherwise false if the peer was not in
   /// the active view and nothing changed.
-  pub async fn demote_active(peer: PeerId) -> Result<bool, MeshError> {
+  pub async fn demote_active(&mut self, peer: PeerId) -> Result<bool, MeshError> {
     todo!();
   }
 
@@ -95,7 +95,7 @@ impl HyParView {
   /// passive view and was successfully moved to the active view, otherwise
   /// returns false if the node was not present in the passive view, or
   /// we failed connecting to the peer.
-  pub async fn promote_passive(peer: PeerId) -> Result<bool, MeshError> {
+  pub async fn promote_passive(&mut self, peer: PeerId) -> Result<bool, MeshError> {
     todo!();
   }
 }
