@@ -51,8 +51,9 @@ impl Decoder for EpisubCodec {
       None => return Ok(None),
     };
 
-    let x = rpc::Rpc::decode(&packet[..]).map_err(std::io::Error::from)?;
+    let message =
+      rpc::Rpc::decode(&packet[..]).map_err(std::io::Error::from)?;
 
-    todo!();
+    Ok(Some(HandlerEvent::Message(message)))
   }
 }

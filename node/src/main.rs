@@ -126,7 +126,7 @@ async fn main() -> Result<()> {
           .into_bytes(),
         )
         .unwrap();
-      info!("Broadcasted message from local peer");
+      //info!("Broadcasted message from local peer");
     }
   });
 
@@ -149,8 +149,8 @@ async fn main() -> Result<()> {
           _ => trace!("swarm event: {:?}", event),
         }
       },
-      Some(sendmsg) = msg_rx.recv() => {
-        info!("placeholder for publishing message with content: {:?}", sendmsg);
+      Some(_sendmsg) = msg_rx.recv() => {
+        //info!("placeholder for publishing message with content: {:?}", sendmsg);
       }
     };
   }

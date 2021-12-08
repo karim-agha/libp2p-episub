@@ -195,20 +195,23 @@ impl NetworkBehaviour for Episub {
       peer_id, endpoint
     );
 
-    // check if we are in the process of joining a topic, if so, for
-    // each topic that has not found its cluster, send a join request 
-    // to every node that connects with us.
-    self.pending_joins.clone().into_iter().for_each(|topic| {
-      self.send_message(
-        peer_id.clone(),
-        rpc::Rpc {
-          topic: topic.clone(),
-          action: Some(rpc::rpc::Action::Join(rpc::Join {
-            ttl: self.config.active_walk_length as u32,
-          })),
-        },
-      );
-    });
+    // if this is us dialing a node, usually one of bootstrap nodes
+    if matches!(endpoint, ConnectedPoint::Dialer { .. }) {
+      // check if we are in the process of joining a topic, if so, for
+      // each topic that has not found its cluster, send a join request
+      // to every node that connects with us.
+      self.pending_joins.clone().into_iter().for_each(|topic| {
+        self.send_message(
+          peer_id.clone(),
+          rpc::Rpc {
+            topic: topic.clone(),
+            action: Some(rpc::rpc::Action::Join(rpc::Join {
+              ttl: self.config.active_walk_length as u32,
+            })),
+          },
+        );
+      });
+    }
   }
 
   fn inject_connection_closed(
@@ -234,7 +237,6 @@ impl NetworkBehaviour for Episub {
       "inject_event, peerid: {}, connection: {:?}, event: {:?}",
       peer_id, connection, event
     );
-    todo!()
   }
 
   fn poll(

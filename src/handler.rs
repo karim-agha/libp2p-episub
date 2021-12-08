@@ -2,7 +2,7 @@ use crate::{
   codec::EpisubCodec, error::EpisubHandlerError, protocol::EpisubProtocol, rpc,
 };
 use asynchronous_codec::Framed;
-use futures::StreamExt;
+use futures::{Sink, StreamExt};
 use libp2p::{
   core::{InboundUpgrade, OutboundUpgrade},
   swarm::{
@@ -10,8 +10,13 @@ use libp2p::{
     ProtocolsHandlerUpgrErr, SubstreamProtocol,
   },
 };
-use std::task::{Context, Poll};
-use tracing::{debug, info, warn};
+use std::{
+  collections::VecDeque,
+  io,
+  pin::Pin,
+  task::{Context, Poll},
+};
+use tracing::{debug, error, info, warn};
 
 #[derive(Debug, Clone)]
 pub enum HandlerEvent {
@@ -31,6 +36,8 @@ enum InboundSubstreamState {
 
 /// State of the outbound substream, opened either by us or by the remote.
 enum OutboundSubstreamState {
+  // upgrade requested and waiting for the upgrade to be negotiated.
+  SubstreamRequested,
   /// Waiting for the user to send a message. The idle state for an outbound substream.
   WaitingOutput(Framed<NegotiatedSubstream, EpisubCodec>),
   /// Waiting to send a message to the remote.
@@ -47,13 +54,23 @@ enum OutboundSubstreamState {
 pub struct EpisubHandler {
   /// Upgrade configuration for the episub protocol.
   listen_protocol: SubstreamProtocol<EpisubProtocol, ()>,
-
   /// The single long-lived outbound substream.
   outbound_substream: Option<OutboundSubstreamState>,
-
   /// The single long-lived inbound substream.
   inbound_substream: Option<InboundSubstreamState>,
+  /// Whether we want the peer to have strong live connection to us.
+  /// This changes when a peer is moved from the active view to the passive view.
+  keep_alive: KeepAlive,
+  /// The list of messages scheduled to be sent to this peer
+  outbound_queue: VecDeque<rpc::Rpc>,
 }
+
+type EpisubHandlerEvent = ProtocolsHandlerEvent<
+  <EpisubHandler as ProtocolsHandler>::OutboundProtocol,
+  <EpisubHandler as ProtocolsHandler>::OutboundOpenInfo,
+  <EpisubHandler as ProtocolsHandler>::OutEvent,
+  <EpisubHandler as ProtocolsHandler>::Error,
+>;
 
 impl EpisubHandler {
   pub fn new(max_transmit_size: usize) -> Self {
@@ -62,8 +79,10 @@ impl EpisubHandler {
         EpisubProtocol::new(max_transmit_size),
         (),
       ),
+      keep_alive: KeepAlive::Yes,
       outbound_substream: None,
       inbound_substream: None,
+      outbound_queue: VecDeque::new(),
     }
   }
 }
@@ -74,7 +93,7 @@ impl ProtocolsHandler for EpisubHandler {
   type Error = EpisubHandlerError;
   type InboundOpenInfo = ();
   type InboundProtocol = EpisubProtocol;
-  type OutboundOpenInfo = rpc::Rpc;
+  type OutboundOpenInfo = ();
   type OutboundProtocol = EpisubProtocol;
 
   fn listen_protocol(
@@ -99,22 +118,21 @@ impl ProtocolsHandler for EpisubHandler {
     substream: <Self::OutboundProtocol as OutboundUpgrade<
       NegotiatedSubstream,
     >>::Output,
-    info: Self::OutboundOpenInfo,
+    _: Self::OutboundOpenInfo,
   ) {
     debug!("outbound protocol negotiated");
-    if self.outbound_substream.is_none() {
-      self.outbound_substream =
-        Some(OutboundSubstreamState::PendingSend(substream, info));
-    }
+    self.outbound_substream =
+      Some(OutboundSubstreamState::WaitingOutput(substream));
   }
 
   fn inject_event(&mut self, event: Self::InEvent) {
     info!("injecting event: {:?}", event);
+    self.outbound_queue.push_back(event);
   }
 
   fn inject_dial_upgrade_error(
     &mut self,
-    info: Self::OutboundOpenInfo,
+    _: Self::OutboundOpenInfo,
     error: ProtocolsHandlerUpgrErr<
       <Self::OutboundProtocol as OutboundUpgrade<NegotiatedSubstream>>::Error,
     >,
@@ -123,20 +141,35 @@ impl ProtocolsHandler for EpisubHandler {
   }
 
   fn connection_keep_alive(&self) -> KeepAlive {
-    KeepAlive::Yes
+    self.keep_alive
   }
 
-  fn poll(
+  fn poll(&mut self, cx: &mut Context<'_>) -> Poll<EpisubHandlerEvent> {
+    // process inbound stream first
+    info!("will process inbound polls");
+    let inbound_poll = self.process_inbound_poll(cx);
+    if !matches!(inbound_poll, Poll::<EpisubHandlerEvent>::Pending) {
+      return inbound_poll;
+    }
+
+    info!("will process outbound polls");
+    // then process outbound steram
+    let outbound_poll = self.process_outbound_poll(cx);
+    if !matches!(outbound_poll, Poll::<EpisubHandlerEvent>::Pending) {
+      return outbound_poll;
+    }
+
+    info!("no polls this time");
+    // nothing to communicate to the runtime for this connection.
+    Poll::Pending
+  }
+}
+
+impl EpisubHandler {
+  fn process_inbound_poll(
     &mut self,
     cx: &mut Context<'_>,
-  ) -> Poll<
-    ProtocolsHandlerEvent<
-      Self::OutboundProtocol,
-      Self::OutboundOpenInfo,
-      Self::OutEvent,
-      Self::Error,
-    >,
-  > {
+  ) -> Poll<EpisubHandlerEvent> {
     loop {
       match std::mem::replace(
         &mut self.inbound_substream,
@@ -147,6 +180,7 @@ impl ProtocolsHandler for EpisubHandler {
             Poll::Ready(Some(Ok(message))) => {
               self.inbound_substream =
                 Some(InboundSubstreamState::WaitingInput(substream));
+              info!("received message on handler: {:?}", message);
               return Poll::Ready(ProtocolsHandlerEvent::Custom(message));
             }
             Poll::Ready(Some(Err(error))) => {
@@ -158,12 +192,37 @@ impl ProtocolsHandler for EpisubHandler {
                 Some(InboundSubstreamState::Closing(substream));
             }
             Poll::Pending => {
+              self.inbound_substream =
+                Some(InboundSubstreamState::WaitingInput(substream));
               break;
             }
           }
         }
-        Some(InboundSubstreamState::Closing(_)) => info!("inbound closing"),
-        Some(InboundSubstreamState::Poisoned) => info!("inbound poisoned"),
+        Some(InboundSubstreamState::Closing(mut substream)) => {
+          match Sink::poll_close(Pin::new(&mut substream), cx) {
+            Poll::Ready(res) => {
+              if let Err(e) = res {
+                // Don't close the connection but just drop the inbound substream.
+                // In case the remote has more to send, they will open up a new
+                // substream.
+                warn!("Inbound substream error while closing: {:?}", e);
+              }
+              self.inbound_substream = None;
+              if self.outbound_substream.is_none() {
+                self.keep_alive = KeepAlive::No;
+              }
+              break;
+            }
+            Poll::Pending => {
+              self.inbound_substream =
+                Some(InboundSubstreamState::Closing(substream));
+              break;
+            }
+          }
+        }
+        Some(InboundSubstreamState::Poisoned) => {
+          unreachable!("Error occurred during inbound stream processing");
+        }
         None => {
           info!("inbound state none");
           self.inbound_substream = None;
@@ -171,7 +230,128 @@ impl ProtocolsHandler for EpisubHandler {
         }
       }
     }
-    
+    Poll::Pending
+  }
+
+  fn process_outbound_poll(
+    &mut self,
+    cx: &mut Context<'_>,
+  ) -> Poll<EpisubHandlerEvent> {
+    loop {
+      match std::mem::replace(
+        &mut self.outbound_substream,
+        Some(OutboundSubstreamState::Poisoned),
+      ) {
+        Some(OutboundSubstreamState::WaitingOutput(substream)) => {
+          if let Some(msg) = self.outbound_queue.pop_front() {
+            info!("there is an outbount event in queue: {:?}", msg);
+            self.outbound_queue.shrink_to_fit();
+            self.outbound_substream =
+              Some(OutboundSubstreamState::PendingSend(substream, msg));
+          } else {
+            self.outbound_substream =
+              Some(OutboundSubstreamState::WaitingOutput(substream));
+            break;
+          }
+        }
+        Some(OutboundSubstreamState::PendingSend(mut substream, message)) => {
+          match Sink::poll_ready(Pin::new(&mut substream), cx) {
+            Poll::Ready(Ok(())) => {
+              info!("sending message {:?}", message);
+              match Sink::start_send(Pin::new(&mut substream), message) {
+                Ok(()) => {
+                  self.outbound_substream =
+                    Some(OutboundSubstreamState::PendingFlush(substream));
+                }
+                Err(EpisubHandlerError::MaxTransmissionSize) => {
+                  error!("Message exceeds the maximum transmission size and was dropped.");
+                  self.outbound_substream =
+                    Some(OutboundSubstreamState::WaitingOutput(substream));
+                }
+                Err(e) => {
+                  error!("Error sending message: {}", e);
+                  return Poll::Ready(ProtocolsHandlerEvent::Close(e));
+                }
+              }
+            }
+            Poll::Ready(Err(e)) => {
+              error!("outbound substream error while sending message: {:?}", e);
+              return Poll::Ready(ProtocolsHandlerEvent::Close(e));
+            }
+            Poll::Pending => {
+              self.keep_alive = KeepAlive::Yes;
+              self.outbound_substream =
+                Some(OutboundSubstreamState::PendingSend(substream, message));
+              break;
+            }
+          }
+        }
+        Some(OutboundSubstreamState::PendingFlush(mut substream)) => {
+          match Sink::poll_flush(Pin::new(&mut substream), cx) {
+            Poll::Ready(Ok(())) => {
+              self.outbound_substream =
+                Some(OutboundSubstreamState::WaitingOutput(substream));
+            }
+            Poll::Ready(Err(e)) => {
+              return Poll::Ready(ProtocolsHandlerEvent::Close(e))
+            }
+            Poll::Pending => {
+              self.keep_alive = KeepAlive::Yes;
+              self.outbound_substream =
+                Some(OutboundSubstreamState::PendingFlush(substream));
+              break;
+            }
+          }
+        }
+        Some(OutboundSubstreamState::_Closing(mut substream)) => {
+          match Sink::poll_close(Pin::new(&mut substream), cx) {
+            Poll::Ready(Ok(())) => {
+              self.outbound_substream = None;
+              if self.inbound_substream.is_none() {
+                self.keep_alive = KeepAlive::No;
+              }
+              break;
+            }
+            Poll::Ready(Err(e)) => {
+              warn!("Outbound substream error while closing: {:?}", e);
+              return Poll::Ready(ProtocolsHandlerEvent::Close(
+                io::Error::new(
+                  io::ErrorKind::BrokenPipe,
+                  "Failed to close outbound substream",
+                )
+                .into(),
+              ));
+            }
+            Poll::Pending => {
+              self.keep_alive = KeepAlive::No;
+              self.outbound_substream =
+                Some(OutboundSubstreamState::_Closing(substream));
+              break;
+            }
+          }
+        }
+        Some(OutboundSubstreamState::SubstreamRequested) => {
+          info!("awaiting substream upgrade");
+          self.outbound_substream =
+            Some(OutboundSubstreamState::SubstreamRequested);
+          break;
+        }
+        Some(OutboundSubstreamState::Poisoned) => {
+          unreachable!("Error occurred during outbound stream processing");
+        }
+        None => {
+          info!("outbound state none");
+          self.outbound_substream =
+            Some(OutboundSubstreamState::SubstreamRequested);
+          return Poll::Ready(
+            ProtocolsHandlerEvent::OutboundSubstreamRequest {
+              protocol: self.listen_protocol.clone(),
+            },
+          );
+        }
+      }
+    }
+
     Poll::Pending
   }
 }
