@@ -18,12 +18,6 @@ use std::{
 };
 use tracing::{debug, error, info, warn};
 
-#[derive(Debug, Clone)]
-pub enum HandlerEvent {
-  Message(rpc::Rpc),
-  PeerKind,
-}
-
 /// State of the inbound substream, opened either by us or by the remote.
 enum InboundSubstreamState {
   /// Waiting for a message from the remote. The idle state for an inbound substream.
@@ -89,7 +83,7 @@ impl EpisubHandler {
 
 impl ProtocolsHandler for EpisubHandler {
   type InEvent = rpc::Rpc;
-  type OutEvent = HandlerEvent;
+  type OutEvent = rpc::Rpc;
   type Error = EpisubHandlerError;
   type InboundOpenInfo = ();
   type InboundProtocol = EpisubProtocol;

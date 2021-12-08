@@ -1,10 +1,16 @@
 //! [HyParView]: a membership protocol for reliable gossip-based broadcast
 //! [HyParView]: http://asc.di.fct.unl.pt/~jleitao/pdf/dsn07-leitao.pdf
 
-use std::collections::{HashSet, VecDeque};
+use std::{
+  collections::{HashSet, VecDeque},
+  pin::Pin,
+  task::{Context, Poll},
+};
 
-use crate::error::MeshError;
+use crate::{behaviour::EpisubNetworkBehaviourAction, error::MeshError, rpc};
+use futures::Future;
 use libp2p::core::{Connected, ConnectedPoint, Multiaddr, PeerId};
+use tracing::debug;
 
 /// A partial view is a set of node identiﬁers maintained locally at each node that is a small
 /// subset of the identiﬁers of all nodes in the system (ideally, of logarithmic size with the
@@ -27,10 +33,12 @@ use libp2p::core::{Connected, ConnectedPoint, Multiaddr, PeerId};
 ///   - a small active view, of size log(n) + c,
 ///   - and a larger passive view, of size k(log(n) + c).
 /// where n is the total number of online nodes participating in the protocol.
-#[derive(Debug)]
 pub struct HyParView {
   active: HashSet<Connected>,
   passive: HashSet<AddressablePeer>,
+
+  /// events that need to yielded to the outside when polling
+  out_events: VecDeque<EpisubNetworkBehaviourAction>,
 }
 
 impl Default for HyParView {
@@ -38,6 +46,7 @@ impl Default for HyParView {
     Self {
       active: HashSet::new(),
       passive: HashSet::new(),
+      out_events: VecDeque::new(),
     }
   }
 }
@@ -86,7 +95,7 @@ impl HyParView {
   /// are requesting to join the topic. Returns true if the peer was
   /// demoted to the passive view, otherwise false if the peer was not in
   /// the active view and nothing changed.
-  pub async fn demote_active(&mut self, peer: PeerId) -> Result<bool, MeshError> {
+  pub async fn add_active(&mut self, peer: PeerId) -> Result<bool, MeshError> {
     todo!();
   }
 
@@ -95,8 +104,52 @@ impl HyParView {
   /// passive view and was successfully moved to the active view, otherwise
   /// returns false if the node was not present in the passive view, or
   /// we failed connecting to the peer.
-  pub async fn promote_passive(&mut self, peer: PeerId) -> Result<bool, MeshError> {
+  pub async fn promote_passive(
+    &mut self,
+    peer: PeerId,
+  ) -> Result<bool, MeshError> {
     todo!();
+  }
+}
+
+impl HyParView {
+  pub fn join(&mut self, peer: PeerId, ttl: u32) {
+    debug!("hyparview: join");
+  }
+
+  pub fn forward_join(&mut self, from: PeerId, params: rpc::ForwardJoin) {
+    debug!("hyparview: forward_join");
+  }
+
+  pub fn neighbor(&mut self, peer: PeerId, priority: i32) {
+    debug!("hyparview: neighbor");
+  }
+
+  pub fn disconnect(&mut self, peer: PeerId, alive: bool) {
+    debug!("hyparview: disconnect");
+  }
+
+  pub fn shuffle(&mut self, peer: PeerId, params: rpc::Shuffle) {
+    debug!("hyparview: shuffle");
+  }
+
+  pub fn shuffle_reply(&mut self, peer: PeerId, params: rpc::ShuffleReply) {
+    debug!("hyparview: shuffle_reply");
+  }
+
+  pub fn message(&mut self, peer: PeerId, data: Vec<u8>) {
+    debug!("hyparview: message");
+  }
+}
+
+impl Future for HyParView {
+  type Output = EpisubNetworkBehaviourAction;
+  fn poll(mut self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+    if let Some(event) = self.out_events.pop_front() {
+      Poll::Ready(event)
+    } else {
+      Poll::Pending
+    }
   }
 }
 

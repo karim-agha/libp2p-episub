@@ -1,17 +1,17 @@
 use crate::{
-  error::{PublishError, SubscriptionError},
-  handler::{EpisubHandler, HandlerEvent},
-  rpc,
-  view::HyParView,
+  error::SubscriptionError, handler::EpisubHandler, rpc, view::HyParView,
 };
+use futures::Future;
 use libp2p::{
   core::{connection::ConnectionId, ConnectedPoint, Multiaddr, PeerId},
   swarm::{
-    NetworkBehaviour, NetworkBehaviourAction, NotifyHandler, PollParameters,
+    CloseConnection, NetworkBehaviour, NetworkBehaviourAction, NotifyHandler,
+    PollParameters,
   },
 };
 use std::{
   collections::{HashMap, HashSet, VecDeque},
+  pin::Pin,
   task::{Context, Poll},
   time::Duration,
 };
@@ -53,7 +53,7 @@ pub enum EpisubEvent {
   EpisubNotSupported,
 }
 
-type EpisubNetworkBehaviourAction =
+pub(crate) type EpisubNetworkBehaviourAction =
   NetworkBehaviourAction<EpisubEvent, EpisubHandler, rpc::Rpc>;
 
 /// Network behaviour that handles the Episub protocol.
@@ -70,6 +70,11 @@ pub struct Episub {
   /// Per-topic node membership
   topics: HashMap<String, HyParView>,
 
+  /// A list of peers that have violated the protocol
+  /// and are pemanently banned from this node. All their
+  /// communication will be ignored and connections rejected.
+  banned_peers: HashSet<PeerId>,
+
   /// Topics that we want to join, but haven't found a node
   /// to connect to.
   pending_joins: HashSet<String>,
@@ -83,6 +88,7 @@ impl Episub {
     Self {
       config: Config::default(),
       topics: HashMap::new(),
+      banned_peers: HashSet::new(),
       pending_joins: HashSet::new(),
       out_events: VecDeque::new(),
     }
@@ -195,6 +201,11 @@ impl NetworkBehaviour for Episub {
       peer_id, endpoint
     );
 
+    if self.banned_peers.contains(peer_id) {
+      self.force_disconnect(*peer_id);
+      return;
+    }
+
     // if this is us dialing a node, usually one of bootstrap nodes
     if matches!(endpoint, ConnectedPoint::Dialer { .. }) {
       // check if we are in the process of joining a topic, if so, for
@@ -231,24 +242,107 @@ impl NetworkBehaviour for Episub {
     &mut self,
     peer_id: PeerId,
     connection: ConnectionId,
-    event: HandlerEvent,
+    event: rpc::Rpc,
   ) {
+    if self.banned_peers.contains(&peer_id) {
+      debug!(
+        "rejecting event from a banned peer {}: {:?}",
+        peer_id, event
+      );
+      self.force_disconnect(peer_id);
+      return;
+    }
+
     debug!(
       "inject_event, peerid: {}, connection: {:?}, event: {:?}",
       peer_id, connection, event
     );
+
+    if event.action.is_none() {
+      self.ban_peer(peer_id); // peer is violating the protocol
+      return;
+    }
+
+    if self.pending_joins.contains(&event.topic) {
+      self.handle_first_join(event.clone());
+    }
+
+    if let Some(view) = self.topics.get_mut(&event.topic) {
+      // handle rpc call on an established topic.
+      use rpc::rpc::Action;
+      match event.action.unwrap() {
+        Action::Join(rpc::Join { ttl }) => {
+          view.join(peer_id, ttl);
+        }
+        Action::ForwardJoin(params) => {
+          view.forward_join(peer_id, params);
+        }
+        Action::Neighbor(rpc::Neighbor { priority }) => {
+          view.neighbor(peer_id, priority);
+        }
+        Action::Disconnect(rpc::Disconnect { alive }) => {
+          view.disconnect(peer_id, alive);
+        }
+        Action::Shuffle(params) => {
+          view.shuffle(peer_id, params);
+        }
+        Action::ShuffleReply(params) => {
+          view.shuffle_reply(peer_id, params);
+        }
+        Action::Message(rpc::Message { data }) => {
+          view.message(peer_id, data);
+        }
+      }
+    }
   }
 
   fn poll(
     &mut self,
-    _: &mut Context<'_>,
+    cx: &mut Context<'_>,
     _: &mut impl PollParameters,
   ) -> Poll<NetworkBehaviourAction<Self::OutEvent, Self::ProtocolsHandler>> {
-    // bubble up any outstanding events in fifo order
+    // bubble up any outstanding behaviour-level events in fifo order
     if let Some(event) = self.out_events.pop_front() {
       return Poll::Ready(event);
     }
 
+    // next bubble up events for all topics
+    // todo, randomize polling among topics, otherwise
+    // some topics might be starved
+    for view in self.topics.values_mut() {
+      let pinned = Pin::new(view);
+      if let Poll::Ready(event) = pinned.poll(cx) {
+        return Poll::Ready(event);
+      }
+    }
+
     Poll::Pending
+  }
+}
+
+impl Episub {
+  /// Handles the first JOIN request to a topic that we are trying to subscribe to.
+  /// Once we have at least one other node in the topic active set, se will stop
+  /// proactively sending JOIN requests to any dialed peer.
+  fn handle_first_join(&mut self, event: rpc::Rpc) {
+    if let Some(rpc::rpc::Action::Join(rpc::Join { .. })) = event.action {
+      self.pending_joins.remove(&event.topic);
+      self.topics.insert(event.topic, HyParView::default());
+    }
+  }
+
+  fn ban_peer(&mut self, peer: PeerId) {
+    warn!("Banning peer {}", peer);
+    self.banned_peers.insert(peer);
+    self.force_disconnect(peer);
+  }
+
+  fn force_disconnect(&mut self, peer: PeerId) {
+    self
+      .out_events
+      .push_back(EpisubNetworkBehaviourAction::CloseConnection {
+        peer_id: peer,
+        connection: CloseConnection::All,
+      });
   }
 }

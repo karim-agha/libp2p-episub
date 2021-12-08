@@ -1,4 +1,4 @@
-use crate::{error::EpisubHandlerError, handler::HandlerEvent, rpc};
+use crate::{error::EpisubHandlerError, rpc};
 use asynchronous_codec::{Bytes, BytesMut, Decoder, Encoder};
 use prost::Message;
 use unsigned_varint::codec;
@@ -33,7 +33,7 @@ impl Encoder for EpisubCodec {
 }
 
 impl Decoder for EpisubCodec {
-  type Item = HandlerEvent;
+  type Item = rpc::Rpc;
   type Error = EpisubHandlerError;
 
   fn decode(
@@ -51,9 +51,8 @@ impl Decoder for EpisubCodec {
       None => return Ok(None),
     };
 
-    let message =
-      rpc::Rpc::decode(&packet[..]).map_err(std::io::Error::from)?;
-
-    Ok(Some(HandlerEvent::Message(message)))
+    Ok(Some(
+      rpc::Rpc::decode(&packet[..]).map_err(std::io::Error::from)?,
+    ))
   }
 }

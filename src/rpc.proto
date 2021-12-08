@@ -1,16 +1,16 @@
-syntax = "proto3";
+syntax = "proto2";
 
 package rpc.pb;
 
 /// Represents a member of the p2p network
 message AddressablePeer {
-	bytes peer_id = 1;
-	bytes multiaddr = 2;
+	required bytes peer_id = 1;
+	required bytes multiaddr = 2;
 }
 
 // Represents a message that is sent between peer nodes
 message Rpc {
-	string topic = 1;
+	required string topic = 1;
 	oneof Action {
 		Join join = 2;
 		ForwardJoin forwardJoin = 3;
@@ -23,16 +23,16 @@ message Rpc {
 }
 
 message Join {
-	uint32 ttl = 1;
+	required uint32 ttl = 1;
 }
 
 message ForwardJoin {
-	uint32 ttl = 2;
-	AddressablePeer peer = 3;
+	required uint32 ttl = 2;
+	required AddressablePeer peer = 3;
 }
 
 message Neighbor {
-	Priority priority = 2;
+	required Priority priority = 2;
 
 	enum Priority {
 		LOW = 0;
@@ -41,8 +41,8 @@ message Neighbor {
 }
 
 message Shuffle {
-	uint32 ttl = 2;
-	AddressablePeer origin = 3;
+	required uint32 ttl = 2;
+	required AddressablePeer origin = 3;
 	repeated AddressablePeer active = 4;
 	repeated AddressablePeer passive = 5;
 }
@@ -52,9 +52,9 @@ message ShuffleReply {
 }
 
 message Disconnect {
-	bool alive = 2;
+	required bool alive = 2;
 }
 
 message Message {
-	bytes data = 1;
+	required bytes data = 1;
 }
