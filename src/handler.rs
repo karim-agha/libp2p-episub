@@ -16,7 +16,7 @@ use std::{
   pin::Pin,
   task::{Context, Poll},
 };
-use tracing::{debug, error, info, warn};
+use tracing::{error, warn};
 
 /// State of the inbound substream, opened either by us or by the remote.
 enum InboundSubstreamState {
@@ -93,7 +93,6 @@ impl ProtocolsHandler for EpisubHandler {
   fn listen_protocol(
     &self,
   ) -> SubstreamProtocol<Self::InboundProtocol, Self::InboundOpenInfo> {
-    debug!("got a clone of listen protocol");
     self.listen_protocol.clone()
   }
 
@@ -102,7 +101,6 @@ impl ProtocolsHandler for EpisubHandler {
     substream: <Self::InboundProtocol as InboundUpgrade<NegotiatedSubstream>>::Output,
     _: Self::InboundOpenInfo,
   ) {
-    debug!("inbound protocol negotiated");
     self.inbound_substream =
       Some(InboundSubstreamState::WaitingInput(substream))
   }
@@ -114,13 +112,11 @@ impl ProtocolsHandler for EpisubHandler {
     >>::Output,
     _: Self::OutboundOpenInfo,
   ) {
-    debug!("outbound protocol negotiated");
     self.outbound_substream =
       Some(OutboundSubstreamState::WaitingOutput(substream));
   }
 
   fn inject_event(&mut self, event: Self::InEvent) {
-    info!("injecting event: {:?}", event);
     self.outbound_queue.push_back(event);
   }
 
@@ -140,20 +136,15 @@ impl ProtocolsHandler for EpisubHandler {
 
   fn poll(&mut self, cx: &mut Context<'_>) -> Poll<EpisubHandlerEvent> {
     // process inbound stream first
-    info!("will process inbound polls");
     let inbound_poll = self.process_inbound_poll(cx);
     if !matches!(inbound_poll, Poll::<EpisubHandlerEvent>::Pending) {
       return inbound_poll;
     }
-
-    info!("will process outbound polls");
     // then process outbound steram
     let outbound_poll = self.process_outbound_poll(cx);
     if !matches!(outbound_poll, Poll::<EpisubHandlerEvent>::Pending) {
       return outbound_poll;
     }
-
-    info!("no polls this time");
     // nothing to communicate to the runtime for this connection.
     Poll::Pending
   }
@@ -174,7 +165,6 @@ impl EpisubHandler {
             Poll::Ready(Some(Ok(message))) => {
               self.inbound_substream =
                 Some(InboundSubstreamState::WaitingInput(substream));
-              info!("received message on handler: {:?}", message);
               return Poll::Ready(ProtocolsHandlerEvent::Custom(message));
             }
             Poll::Ready(Some(Err(error))) => {
@@ -218,7 +208,6 @@ impl EpisubHandler {
           unreachable!("Error occurred during inbound stream processing");
         }
         None => {
-          info!("inbound state none");
           self.inbound_substream = None;
           break;
         }
@@ -238,7 +227,6 @@ impl EpisubHandler {
       ) {
         Some(OutboundSubstreamState::WaitingOutput(substream)) => {
           if let Some(msg) = self.outbound_queue.pop_front() {
-            info!("there is an outbount event in queue: {:?}", msg);
             self.outbound_queue.shrink_to_fit();
             self.outbound_substream =
               Some(OutboundSubstreamState::PendingSend(substream, msg));
@@ -251,7 +239,6 @@ impl EpisubHandler {
         Some(OutboundSubstreamState::PendingSend(mut substream, message)) => {
           match Sink::poll_ready(Pin::new(&mut substream), cx) {
             Poll::Ready(Ok(())) => {
-              info!("sending message {:?}", message);
               match Sink::start_send(Pin::new(&mut substream), message) {
                 Ok(()) => {
                   self.outbound_substream =
@@ -325,7 +312,6 @@ impl EpisubHandler {
           }
         }
         Some(OutboundSubstreamState::SubstreamRequested) => {
-          info!("awaiting substream upgrade");
           self.outbound_substream =
             Some(OutboundSubstreamState::SubstreamRequested);
           break;
@@ -334,7 +320,6 @@ impl EpisubHandler {
           unreachable!("Error occurred during outbound stream processing");
         }
         None => {
-          info!("outbound state none");
           self.outbound_substream =
             Some(OutboundSubstreamState::SubstreamRequested);
           return Poll::Ready(

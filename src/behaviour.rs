@@ -6,7 +6,11 @@ use crate::{
 };
 use futures::Future;
 use libp2p::{
-  core::{connection::ConnectionId, ConnectedPoint, Multiaddr, PeerId},
+  core::{
+    connection::{ConnectionId, ListenerId},
+    ConnectedPoint, Multiaddr, PeerId,
+  },
+  multiaddr::Protocol,
   swarm::{
     CloseConnection, NetworkBehaviour, NetworkBehaviourAction, NotifyHandler,
     PollParameters,
@@ -14,6 +18,7 @@ use libp2p::{
 };
 use std::{
   collections::{HashMap, HashSet, VecDeque},
+  net::{Ipv4Addr, Ipv6Addr},
   pin::Pin,
   task::{Context, Poll},
   time::Duration,
@@ -70,6 +75,9 @@ pub struct Episub {
   /// Global behaviour configuration
   config: Config,
 
+  /// Identity of this node
+  local_node: Option<AddressablePeer>,
+
   /// Per-topic node membership
   topics: HashMap<String, HyParView>,
 
@@ -87,17 +95,28 @@ pub struct Episub {
 
   /// a mapping of known peerid to the addresses they have dialed us from
   peer_addresses: HashMap<PeerId, Multiaddr>,
+
+  /// This is the set of peers that we have managed to dial before we started
+  /// listening on an external address that is not localhost. It does not make
+  /// sense to send a JOIN message to peers without telling them where are we
+  /// listening, so in cases when a connection is established, but we didn't
+  /// get any valid address in local_node.addresses, we keep track of those
+  /// peer id, and once we get a listen address, we send a join request to
+  /// them.
+  early_peers: HashSet<PeerId>,
 }
 
 impl Episub {
   pub fn new() -> Self {
     Self {
+      local_node: None,
       config: Config::default(),
       topics: HashMap::new(),
       peer_addresses: HashMap::new(),
       banned_peers: HashSet::new(),
       pending_joins: HashSet::new(),
       out_events: VecDeque::new(),
+      early_peers: HashSet::new(),
     }
   }
 }
@@ -195,7 +214,6 @@ impl NetworkBehaviour for Episub {
   type OutEvent = EpisubEvent;
 
   fn new_handler(&mut self) -> Self::ProtocolsHandler {
-    debug!("creating new handler");
     EpisubHandler::new(self.config.max_transmit_size)
   }
 
@@ -232,18 +250,59 @@ impl NetworkBehaviour for Episub {
     if matches!(endpoint, ConnectedPoint::Dialer { .. }) {
       // check if we are in the process of joining a topic, if so, for
       // each topic that has not found its cluster, send a join request
-      // to every node that connects with us.
-      self.pending_joins.clone().into_iter().for_each(|topic| {
-        self.send_message(
-          peer_id.clone(),
-          rpc::Rpc {
-            topic: topic.clone(),
-            action: Some(rpc::rpc::Action::Join(rpc::Join {
-              ttl: self.config.active_walk_length as u32,
-            })),
-          },
-        );
-      });
+      // to every node that accepts a connection from us.
+
+      // make sure that we know who we are and how we can be reached.
+      if self.local_node.is_some() {
+        self.pending_joins.clone().into_iter().for_each(|topic| {
+          self.send_message(
+            peer_id.clone(),
+            rpc::Rpc {
+              topic: topic.clone(),
+              action: Some(rpc::rpc::Action::Join(rpc::Join {
+                ttl: self.config.active_walk_length as u32,
+                peer: self.local_node.as_ref().unwrap().clone().into(),
+              })),
+            },
+          );
+        });
+      } else {
+        self.early_peers.insert(peer_id.clone());
+      }
+    }
+  }
+
+  fn inject_new_listen_addr(&mut self, _id: ListenerId, addr: &Multiaddr) {
+    if !is_local_address(addr) {
+      if let Some(node) = self.local_node.as_mut() {
+        node.addresses.push(addr.clone());
+
+        // attempt to send JOIN messages to all peers that we have connected
+        // to before getting a local address assigned.
+        let early_peers: Vec<PeerId> = self.early_peers.drain().collect();
+        let pending_joins = self.pending_joins.clone();
+
+        for topic in pending_joins.iter() {
+          for peer in early_peers.iter() {
+            self.send_message(
+              peer.clone(),
+              rpc::Rpc {
+                topic: topic.clone(),
+                action: Some(rpc::rpc::Action::Join(rpc::Join {
+                  ttl: self.config.active_walk_length as u32,
+                  peer: self.local_node.as_ref().unwrap().clone().into(),
+                })),
+              },
+            );
+          }
+        }
+      }
+    }
+  }
+
+  fn inject_expired_listen_addr(&mut self, _id: ListenerId, addr: &Multiaddr) {
+    if let Some(node) = self.local_node.as_mut() {
+      node.addresses.retain(|a| a != addr);
     }
   }
 
@@ -286,21 +345,27 @@ impl NetworkBehaviour for Episub {
     }
 
     if self.pending_joins.contains(&event.topic) {
-      self.handle_first_join(event.clone());
+      self.handle_join_accepted(peer_id, event.clone());
     }
 
     if let Some(view) = self.topics.get_mut(&event.topic) {
       // handle rpc call on an established topic.
       use rpc::rpc::Action;
       match event.action.unwrap() {
-        Action::Join(rpc::Join { ttl }) => {
-          view.join(
-            AddressablePeer {
-              peer_id: peer_id,
-              address: self.peer_addresses.get(&peer_id).unwrap().clone(),
-            },
-            ttl,
+        Action::Join(rpc::Join { ttl, peer }) => {
+          if let Ok(peer) = peer.try_into() {
+            view.join(peer, ttl);
+          } else {
+            warn!("malformed join request");
+            self.ban_peer(peer_id);
+          }
+        }
+        Action::JoinAccepted(rpc::JoinAccepted { .. }) => {
+          warn!(
+            "received duplicate join accepted from peer {}, banning peer",
+            peer_id
           );
+          self.ban_peer(peer_id);
         }
         Action::ForwardJoin(params) => {
           view.forward_join(peer_id, params);
@@ -321,14 +386,34 @@ impl NetworkBehaviour for Episub {
           view.message(peer_id, data);
         }
       }
+    } else {
+      // reject any messages on a topic that we're not subscribed to
+      // by immediately sending a disconnect event with alive: false,
+      // then closing connection to the peer.
+      self
+        .out_events
+        .push_back(EpisubNetworkBehaviourAction::NotifyHandler {
+          peer_id: peer_id,
+          handler: NotifyHandler::Any,
+          event: rpc::Rpc {
+            topic: event.topic,
+            action: Some(rpc::rpc::Action::Disconnect(rpc::Disconnect {
+              alive: false,
+            })),
+          },
+        });
+      self.force_disconnect(peer_id);
     }
   }
 
   fn poll(
     &mut self,
     cx: &mut Context<'_>,
-    _: &mut impl PollParameters,
+    params: &mut impl PollParameters,
   ) -> Poll<NetworkBehaviourAction<Self::OutEvent, Self::ProtocolsHandler>> {
+    // update local peer identity and addresses
+    self.update_local_node_info(params);
+
     // bubble up any outstanding behaviour-level events in fifo order
     if let Some(event) = self.out_events.pop_front() {
       return Poll::Ready(event);
@@ -349,16 +434,59 @@ impl NetworkBehaviour for Episub {
 }
 
 impl Episub {
+  /// updates our own information abount ourselves.
+  /// This includes our own peer id, the addresses we are listening on
+  /// and any external addresses we are aware of. Excludes any localhost
+  /// addresses
+  fn update_local_node_info(&mut self, params: &impl PollParameters) {
+    if self.local_node.is_none() {
+      self.local_node.replace(AddressablePeer {
+        peer_id: *params.local_peer_id(),
+        addresses: params
+          .external_addresses()
+          .map(|ad| ad.addr)
+          .chain(params.listened_addresses())
+          .filter(|a| !is_local_address(a))
+          .collect(),
+      });
+    }
+  }
+
   /// Handles the first JOIN request to a topic that we are trying to subscribe to.
   /// Once we have at least one other node in the topic active set, se will stop
   /// proactively sending JOIN requests to any dialed peer.
-  fn handle_first_join(&mut self, event: rpc::Rpc) {
-    if let Some(rpc::rpc::Action::Join(rpc::Join { .. })) = event.action {
-      self.pending_joins.remove(&event.topic);
-      self.topics.insert(
-        event.topic.clone(),
-        HyParView::new(event.topic, self.config.clone()),
-      );
+  fn handle_join_accepted(&mut self, peer_id: PeerId, event: rpc::Rpc) {
+    if self.local_node.is_none() {
+      return; // we still don't know who we are.
+    }
+
+    if let Some(rpc::rpc::Action::JoinAccepted(rpc::JoinAccepted { peer })) =
+      event.action
+    {
+      if let Ok(peer) = AddressablePeer::try_from(peer) {
+        if peer.peer_id != self.local_node.as_ref().unwrap().peer_id {
+          warn!("Got invalid join-accept!");
+          self.ban_peer(peer_id);
+        } else {
+          if let Some(view) = self.topics.get_mut(&event.topic) {
+            self.pending_joins.remove(&event.topic);
+            view.join_accepted(AddressablePeer {
+              peer_id,
+              addresses: vec![self
+                .peer_addresses
+                .get(&peer_id)
+                .unwrap()
+                .clone()],
+            })
+          } else {
+            warn!("Got join-accept for a topic we didn't request to join");
+            self.ban_peer(peer_id);
+          }
+        }
+      } else {
+        warn!("malformed join-accpet message, banning peer.");
+        self.ban_peer(peer_id);
+      }
     }
   }
 
@@ -377,4 +505,17 @@ impl Episub {
         connection: CloseConnection::All,
       });
   }
+}
+
+fn is_local_address(addr: &Multiaddr) -> bool {
+  addr.iter().any(|p| {
+    // fileter out all localhost addresses
+    if let Protocol::Ip4(addr) = p {
+      addr == Ipv4Addr::LOCALHOST || addr == Ipv4Addr::UNSPECIFIED
+    } else if let Protocol::Ip6(addr) = p {
+      addr == Ipv6Addr::LOCALHOST || addr == Ipv6Addr::UNSPECIFIED
+    } else {
+      false
+    }
+  })
 }

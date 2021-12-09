@@ -3,7 +3,6 @@ use asynchronous_codec::Framed;
 use futures::{future, AsyncRead, AsyncWrite};
 use libp2p::core::{InboundUpgrade, OutboundUpgrade, UpgradeInfo};
 use std::{future::Future, iter, pin::Pin};
-use tracing::debug;
 use unsigned_varint::codec;
 
 #[derive(Debug, Clone)]
@@ -36,7 +35,6 @@ where
     Pin<Box<dyn Future<Output = Result<Self::Output, Self::Error>> + Send>>;
 
   fn upgrade_inbound(self, socket: TSocket, _: Self::Info) -> Self::Future {
-    debug!("protocol upgrade inbound");
     let mut length_codec = codec::UviBytes::default();
     length_codec.set_max_len(self.max_transmit_size);
     Box::pin(future::ok(Framed::new(
@@ -56,7 +54,6 @@ where
     Pin<Box<dyn Future<Output = Result<Self::Output, Self::Error>> + Send>>;
 
   fn upgrade_outbound(self, socket: TSocket, _: Self::Info) -> Self::Future {
-    debug!("protocol upgrade outbound");
     let mut length_codec = codec::UviBytes::default();
     length_codec.set_max_len(self.max_transmit_size);
     Box::pin(future::ok(Framed::new(

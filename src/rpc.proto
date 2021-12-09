@@ -5,7 +5,7 @@ package rpc.pb;
 /// Represents a member of the p2p network
 message AddressablePeer {
 	required bytes peer_id = 1;
-	required bytes multiaddr = 2;
+	repeated bytes addresses = 2;
 }
 
 // Represents a message that is sent between peer nodes
@@ -13,17 +13,23 @@ message Rpc {
 	required string topic = 1;
 	oneof Action {
 		Join join = 2;
-		ForwardJoin forwardJoin = 3;
-		Neighbor neighbor = 4;
-		Shuffle shuffle = 5;
-		ShuffleReply shuffleReply = 6;
-		Disconnect disconnect = 7;
-		Message message = 8;
+		JoinAccepted joinAccepted = 3;
+		ForwardJoin forwardJoin = 4;
+		Neighbor neighbor = 5;
+		Shuffle shuffle = 6;
+		ShuffleReply shuffleReply = 7;
+		Disconnect disconnect = 8;
+		Message message = 9;
 	}
 }
 
 message Join {
 	required uint32 ttl = 1;
+	required AddressablePeer peer = 2;
+}
+
+message JoinAccepted {
+	required AddressablePeer peer = 1;
 }
 
 message ForwardJoin {

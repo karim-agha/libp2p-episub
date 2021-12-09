@@ -6,7 +6,7 @@ use crate::{
 };
 use futures::Future;
 use libp2p::{
-  core::{Connected, ConnectedPoint, Multiaddr, PeerId},
+  core::{Multiaddr, PeerId},
   swarm::NotifyHandler,
 };
 use std::{
@@ -43,7 +43,7 @@ pub struct HyParView {
   active: HashSet<AddressablePeer>,
   passive: HashSet<AddressablePeer>,
 
-  /// events that need to yielded to the outside when polling
+  /// events that need to be yielded to the outside when polling
   out_events: VecDeque<EpisubNetworkBehaviourAction>,
 }
 
@@ -115,13 +115,15 @@ impl HyParView {
 /// public handlers of HyParView protocol control messages
 impl HyParView {
   pub fn join(&mut self, peer: AddressablePeer, ttl: u32) {
-    debug!("hyparview: join");
-    
     if self.active.contains(&peer) {
       return;
     }
 
     if let Some(dropped) = self.free_up_active_slot() {
+      debug!(
+        "Moving peer {} from active view to passive.",
+        dropped.peer_id
+      );
       self
         .out_events
         .push_back(EpisubNetworkBehaviourAction::NotifyHandler {
@@ -136,8 +138,6 @@ impl HyParView {
         });
       self.passive.insert(dropped);
     }
-
-    self.active.insert(peer.clone());
 
     for active_peer in self.active.iter().collect::<Vec<_>>() {
       self
@@ -154,6 +154,14 @@ impl HyParView {
           },
         });
     }
+
+    debug!("Adding peer to active view: {:?}", peer);
+    self.active.insert(peer.clone());
+  }
+
+  pub fn join_accepted(&mut self, peer: AddressablePeer) {
+    debug!("Adding peer to active view: {:?}", peer);
+    self.active.insert(peer);
   }
 
   pub fn forward_join(&mut self, from: PeerId, params: rpc::ForwardJoin) {
@@ -196,21 +204,7 @@ impl Future for HyParView {
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct AddressablePeer {
   pub peer_id: PeerId,
-  pub address: Multiaddr,
-}
-
-impl From<&Connected> for AddressablePeer {
-  fn from(c: &Connected) -> Self {
-    Self {
-      peer_id: c.peer_id,
-      address: match &c.endpoint {
-        ConnectedPoint::Dialer { address } => address.clone(),
-        ConnectedPoint::Listener { send_back_addr, .. } => {
-          send_back_addr.clone()
-        }
-      },
-    }
-  }
+  pub addresses: Vec<Multiaddr>,
 }
 
 /// Conversion from wire format to internal representation
@@ -221,8 +215,11 @@ impl TryFrom<rpc::AddressablePeer> for AddressablePeer {
     Ok(Self {
       peer_id: PeerId::from_bytes(value.peer_id.as_slice())
         .map_err(FormatError::Multihash)?,
-      address: Multiaddr::try_from(value.multiaddr)
-        .map_err(FormatError::Multiaddr)?,
+      addresses: value
+        .addresses
+        .into_iter()
+        .filter_map(|a| Multiaddr::try_from(a).ok())
+        .collect(),
     })
   }
 }
@@ -232,7 +229,7 @@ impl Into<rpc::AddressablePeer> for AddressablePeer {
   fn into(self) -> rpc::AddressablePeer {
     rpc::AddressablePeer {
       peer_id: self.peer_id.to_bytes(),
-      multiaddr: self.address.to_vec(),
+      addresses: self.addresses.into_iter().map(|a| a.to_vec()).collect(),
     }
   }
 }
