@@ -1,5 +1,8 @@
 use crate::{
-  error::SubscriptionError, handler::EpisubHandler, rpc, view::HyParView,
+  error::SubscriptionError,
+  handler::EpisubHandler,
+  rpc,
+  view::{AddressablePeer, HyParView},
 };
 use futures::Future;
 use libp2p::{
@@ -33,11 +36,11 @@ pub struct Config {
 impl Default for Config {
   fn default() -> Self {
     Self {
-      network_size: 10_000,
+      network_size: 1000,
       active_view_factor: 1,
       passive_view_factor: 5,
-      active_walk_length: 3,
-      passive_walk_length: 4,
+      active_walk_length: 4,
+      passive_walk_length: 3,
       shuffle_interval: Duration::from_secs(60),
       max_transmit_size: 1024 * 1024 * 100,
     }
@@ -81,6 +84,9 @@ pub struct Episub {
 
   /// events that need to yielded to the outside when polling
   out_events: VecDeque<EpisubNetworkBehaviourAction>,
+
+  /// a mapping of known peerid to the addresses they have dialed us from
+  peer_addresses: HashMap<PeerId, Multiaddr>,
 }
 
 impl Episub {
@@ -88,6 +94,7 @@ impl Episub {
     Self {
       config: Config::default(),
       topics: HashMap::new(),
+      peer_addresses: HashMap::new(),
       banned_peers: HashSet::new(),
       pending_joins: HashSet::new(),
       out_events: VecDeque::new(),
@@ -136,7 +143,10 @@ impl Episub {
       Ok(false)
     } else {
       debug!("Subscribing to topic: {}", topic);
-      self.topics.insert(topic.clone(), HyParView::default());
+      self.topics.insert(
+        topic.clone(),
+        HyParView::new(topic.clone(), self.config.clone()),
+      );
       self.pending_joins.insert(topic);
       Ok(true)
     }
@@ -206,6 +216,18 @@ impl NetworkBehaviour for Episub {
       return;
     }
 
+    // preserve a mapping from peer id to the address that was
+    // used to establish the connection.
+    self.peer_addresses.insert(
+      *peer_id,
+      match endpoint {
+        ConnectedPoint::Dialer { address } => address.clone(),
+        ConnectedPoint::Listener { send_back_addr, .. } => {
+          send_back_addr.clone()
+        }
+      },
+    );
+
     // if this is us dialing a node, usually one of bootstrap nodes
     if matches!(endpoint, ConnectedPoint::Dialer { .. }) {
       // check if we are in the process of joining a topic, if so, for
@@ -272,7 +294,13 @@ impl NetworkBehaviour for Episub {
       use rpc::rpc::Action;
       match event.action.unwrap() {
         Action::Join(rpc::Join { ttl }) => {
-          view.join(peer_id, ttl);
+          view.join(
+            AddressablePeer {
+              peer_id: peer_id,
+              address: self.peer_addresses.get(&peer_id).unwrap().clone(),
+            },
+            ttl,
+          );
         }
         Action::ForwardJoin(params) => {
           view.forward_join(peer_id, params);
@@ -327,12 +355,16 @@ impl Episub {
   fn handle_first_join(&mut self, event: rpc::Rpc) {
     if let Some(rpc::rpc::Action::Join(rpc::Join { .. })) = event.action {
       self.pending_joins.remove(&event.topic);
-      self.topics.insert(event.topic, HyParView::default());
+      self.topics.insert(
+        event.topic.clone(),
+        HyParView::new(event.topic, self.config.clone()),
+      );
     }
   }
 
   fn ban_peer(&mut self, peer: PeerId) {
     warn!("Banning peer {}", peer);
+    self.peer_addresses.remove(&peer);
     self.banned_peers.insert(peer);
     self.force_disconnect(peer);
   }

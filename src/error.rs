@@ -1,3 +1,4 @@
+use libp2p::{multiaddr, multihash};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -39,4 +40,15 @@ pub enum PublishError {
 
   #[error("The compression algorithm failed: {0}")]
   TransformFailed(#[from] std::io::Error),
+}
+
+/// Errors associated with converting values from
+/// wire format to internal represenation
+#[derive(Debug, Error)]
+pub enum FormatError {
+  #[error("Invalid multihash: {0}")]
+  Multihash(#[from] multihash::Error),
+
+  #[error("Invalid multiaddress: {0}")]
+  Multiaddr(#[from] multiaddr::Error),
 }

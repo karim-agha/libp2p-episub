@@ -1,15 +1,19 @@
 //! [HyParView]: a membership protocol for reliable gossip-based broadcast
 //! [HyParView]: http://asc.di.fct.unl.pt/~jleitao/pdf/dsn07-leitao.pdf
 
+use crate::{
+  behaviour::EpisubNetworkBehaviourAction, error::FormatError, rpc, Config,
+};
+use futures::Future;
+use libp2p::{
+  core::{Connected, ConnectedPoint, Multiaddr, PeerId},
+  swarm::NotifyHandler,
+};
 use std::{
   collections::{HashSet, VecDeque},
   pin::Pin,
   task::{Context, Poll},
 };
-
-use crate::{behaviour::EpisubNetworkBehaviourAction, error::MeshError, rpc};
-use futures::Future;
-use libp2p::core::{Connected, ConnectedPoint, Multiaddr, PeerId};
 use tracing::debug;
 
 /// A partial view is a set of node identiﬁers maintained locally at each node that is a small
@@ -34,32 +38,33 @@ use tracing::debug;
 ///   - and a larger passive view, of size k(log(n) + c).
 /// where n is the total number of online nodes participating in the protocol.
 pub struct HyParView {
-  active: HashSet<Connected>,
+  config: Config,
+  topic: String,
+  active: HashSet<AddressablePeer>,
   passive: HashSet<AddressablePeer>,
 
   /// events that need to yielded to the outside when polling
   out_events: VecDeque<EpisubNetworkBehaviourAction>,
 }
 
-impl Default for HyParView {
-  fn default() -> Self {
+/// Access to Partial View network overlays
+impl HyParView {
+  pub fn new(topic: String, config: Config) -> Self {
     Self {
+      config,
+      topic,
       active: HashSet::new(),
       passive: HashSet::new(),
       out_events: VecDeque::new(),
     }
   }
-}
-
-/// Access to Partial View network overlays
-impl HyParView {
   /// The active views of all nodes create an overlay that is used for message dissemination.
   /// Links in the overlay are symmetric, this means that each node keeps an open TCP connection
   /// to every other node in its active view.
   ///
   /// The active view is maintained using a reactive strategy, meaning nodes are remove
   /// when they fail.
-  pub fn active(&self) -> impl Iterator<Item = &Connected> {
+  pub fn active(&self) -> impl Iterator<Item = &AddressablePeer> {
     self.active.iter()
   }
 
@@ -76,45 +81,79 @@ impl HyParView {
   pub fn all_peers_id(&self) -> impl Iterator<Item = &PeerId> {
     self
       .active()
-      .map(|a| &a.peer_id)
+      .map(|ap| &ap.peer_id)
       .chain(self.passive().map(|p| &p.peer_id))
   }
 }
 
-/// Manipulation of PartialView nodes
 impl HyParView {
-  /// Removes a node entirely from the all views, active and passive.
-  /// This happens when we know that a node has died, or it has been
-  /// banned for violating the protocol or other security reasons.
-  pub fn remove(&mut self, peer: PeerId) -> Option<AddressablePeer> {
-    todo!();
+  fn max_active_view_size(&self) -> usize {
+    ((self.config.network_size as f64).log2()
+      + self.config.active_view_factor as f64)
+      .round() as usize
   }
 
-  /// Removes a node from the active list and moves it to the passive list.
-  /// This happens when for example the active view is full and new nodes
-  /// are requesting to join the topic. Returns true if the peer was
-  /// demoted to the passive view, otherwise false if the peer was not in
-  /// the active view and nothing changed.
-  pub async fn add_active(&mut self, peer: PeerId) -> Result<bool, MeshError> {
-    todo!();
+  fn max_passive_view_size(&self) -> usize {
+    ((self.config.network_size as f64).log2()
+      * self.config.passive_view_factor as f64)
+      .round() as usize
   }
 
-  /// Promotes a node from the passive list to the active list and removes
-  /// it from the passive view. Returns true if the node was found in the
-  /// passive view and was successfully moved to the active view, otherwise
-  /// returns false if the node was not present in the passive view, or
-  /// we failed connecting to the peer.
-  pub async fn promote_passive(
-    &mut self,
-    peer: PeerId,
-  ) -> Result<bool, MeshError> {
-    todo!();
+  /// This is invoked when a node sends us a JOIN request,
+  /// it will see if the active view is full, and if so, removes
+  /// a random node from the active view and makes space for the new
+  /// node.
+  fn free_up_active_slot(&mut self) -> Option<AddressablePeer> {
+    if self.active.len() >= self.max_active_view_size() {
+      Some(self.active.drain().next().unwrap())
+    } else {
+      None
+    }
   }
 }
 
+/// public handlers of HyParView protocol control messages
 impl HyParView {
-  pub fn join(&mut self, peer: PeerId, ttl: u32) {
+  pub fn join(&mut self, peer: AddressablePeer, ttl: u32) {
     debug!("hyparview: join");
+    
+    if self.active.contains(&peer) {
+      return;
+    }
+
+    if let Some(dropped) = self.free_up_active_slot() {
+      self
+        .out_events
+        .push_back(EpisubNetworkBehaviourAction::NotifyHandler {
+          peer_id: dropped.peer_id,
+          handler: NotifyHandler::Any,
+          event: rpc::Rpc {
+            topic: self.topic.clone(),
+            action: Some(rpc::rpc::Action::Disconnect(rpc::Disconnect {
+              alive: true,
+            })),
+          },
+        });
+      self.passive.insert(dropped);
+    }
+
+    self.active.insert(peer.clone());
+
+    for active_peer in self.active.iter().collect::<Vec<_>>() {
+      self
+        .out_events
+        .push_back(EpisubNetworkBehaviourAction::NotifyHandler {
+          peer_id: active_peer.peer_id,
+          handler: NotifyHandler::Any,
+          event: rpc::Rpc {
+            topic: self.topic.clone(),
+            action: Some(rpc::rpc::Action::ForwardJoin(rpc::ForwardJoin {
+              peer: peer.clone().into(),
+              ttl,
+            })),
+          },
+        });
+    }
   }
 
   pub fn forward_join(&mut self, from: PeerId, params: rpc::ForwardJoin) {
@@ -154,7 +193,7 @@ impl Future for HyParView {
 }
 
 /// This struct uniquely identifies a node on the internet.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct AddressablePeer {
   pub peer_id: PeerId,
   pub address: Multiaddr,
@@ -170,6 +209,30 @@ impl From<&Connected> for AddressablePeer {
           send_back_addr.clone()
         }
       },
+    }
+  }
+}
+
+/// Conversion from wire format to internal representation
+impl TryFrom<rpc::AddressablePeer> for AddressablePeer {
+  type Error = FormatError;
+
+  fn try_from(value: rpc::AddressablePeer) -> Result<Self, Self::Error> {
+    Ok(Self {
+      peer_id: PeerId::from_bytes(value.peer_id.as_slice())
+        .map_err(FormatError::Multihash)?,
+      address: Multiaddr::try_from(value.multiaddr)
+        .map_err(FormatError::Multiaddr)?,
+    })
+  }
+}
+
+/// Conversion from internal representation to wire format
+impl Into<rpc::AddressablePeer> for AddressablePeer {
+  fn into(self) -> rpc::AddressablePeer {
+    rpc::AddressablePeer {
+      peer_id: self.peer_id.to_bytes(),
+      multiaddr: self.address.to_vec(),
     }
   }
 }
