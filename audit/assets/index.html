@@ -121,19 +121,36 @@
       }
     }
 
+    const removeMessage = (from, to) => {
+      const id = from + '-' + to;
+      if (edges.has(id)) {
+        cy.remove('[id="' + id + '"]')
+        edges.delete(id);
+      }
+    }
+
     var socket = new WebSocket('ws://' + location.host + '/stream');
     socket.onopen = (event) => {
       console.log('socket opened ', event)
     }
 
     socket.onmessage = (event) => {
-      console.log('got message: ', event);
       const data = JSON.parse(event.data);
+      console.log('got message: ', data);
 
-      if (data.event === "Message") {
+      if (data.event === "Up") {
+        addNode(data.node_id);
+      }
+
+      if (data.event === "Connected") {
         addNode(data.node_id);
         addNode(data.peer_id);
         addMessage(data.node_id, data.peer_id);
+      }
+
+      if (data.event === "Disconnected") {
+        removeMessage(data.node_id, data.peer_id);
+        removeMessage(data.peer_id, data.node_id);
       }
     }
   </script>

@@ -3,7 +3,7 @@
 
 use crate::{
   behaviour::EpisubNetworkBehaviourAction, error::FormatError,
-  handler::EpisubHandler, rpc, Config,
+  handler::EpisubHandler, rpc, Config, EpisubEvent,
 };
 use futures::Future;
 use libp2p::{
@@ -13,12 +13,13 @@ use libp2p::{
     NotifyHandler,
   },
 };
+use rand::prelude::SliceRandom;
 use std::{
   collections::{HashSet, VecDeque},
   pin::Pin,
   task::{Context, Poll},
 };
-use tracing::{debug, warn};
+use tracing::debug;
 
 /// A partial view is a set of node identiﬁers maintained locally at each node that is a small
 /// subset of the identiﬁers of all nodes in the system (ideally, of logarithmic size with the
@@ -45,7 +46,7 @@ pub struct HyParView {
   config: Config,
   topic: String,
   active: HashSet<AddressablePeer>,
-  passive: HashSet<AddressablePeer>,
+  passive: VecDeque<AddressablePeer>,
 
   /// events that need to be yielded to the outside when polling
   out_events: VecDeque<EpisubNetworkBehaviourAction>,
@@ -58,7 +59,7 @@ impl HyParView {
       config,
       topic,
       active: HashSet::new(),
-      passive: HashSet::new(),
+      passive: VecDeque::new(),
       out_events: VecDeque::new(),
     }
   }
@@ -140,7 +141,7 @@ impl HyParView {
             })),
           },
         });
-      self.passive.insert(dropped);
+      self.add_node_to_passive_view(dropped);
     }
 
     // notify the peer that we have accepted their join request, so
@@ -200,12 +201,6 @@ impl HyParView {
       return;
     }
 
-    // already have it in the active view,
-    // this is a duplicate/cyclic message
-    if self.active().any(|p| p.peer_id == peer.peer_id) {
-      return;
-    }
-
     if self.active.len() < self.max_active_view_size() {
       self.add_node_to_active_view(peer.clone());
     } else {
@@ -213,7 +208,7 @@ impl HyParView {
     }
 
     for n in &self.active {
-      if n.peer_id == sender {
+      if n.peer_id == sender || n.peer_id == peer.peer_id {
         continue;
       }
       self
@@ -232,13 +227,16 @@ impl HyParView {
     }
   }
 
-  pub fn neighbor(&mut self, peer: PeerId, priority: i32) {
+  pub fn neighbor(&mut self, _peer: PeerId, _priority: i32) {
     debug!("hyparview: neighbor");
   }
 
   /// Handles DISCONNECT message, if the parameter 'alive' is true, then
   /// the peer is moved from active view to passive view, otherwise it is
   /// remove completely from all views.
+  ///
+  /// Also invoked by the behaviour when a connection with a peer is dropped.
+  /// This ensures that dropped connections on not remain in the active view.
   pub fn disconnect(&mut self, peer: PeerId, alive: bool) {
     debug!("hyparview: disconnect");
     if alive {
@@ -250,30 +248,39 @@ impl HyParView {
       found
         .into_iter()
         .for_each(|p| self.add_node_to_passive_view(p));
+    } else {
+      self.passive.retain(|p| p.peer_id != peer);
     }
 
     self.active.retain(|p| p.peer_id != peer);
+    self
+      .out_events
+      .push_back(EpisubNetworkBehaviourAction::GenerateEvent(
+        EpisubEvent::ActivePeerRemoved(peer),
+      ));
+
+    if self.active.len() < self.max_active_view_size() {
+      self
+        .passive
+        .make_contiguous()
+        .shuffle(&mut rand::thread_rng());
+      let random = self.passive.pop_front();
+      if let Some(random) = random {
+        self.join(random, self.config.active_walk_length as u32);
+      }
+    }
   }
 
-  pub fn shuffle(&mut self, peer: PeerId, params: rpc::Shuffle) {
+  pub fn shuffle(&mut self, _peer: PeerId, _params: rpc::Shuffle) {
     debug!("hyparview: shuffle");
   }
 
-  pub fn shuffle_reply(&mut self, peer: PeerId, params: rpc::ShuffleReply) {
+  pub fn shuffle_reply(&mut self, _peer: PeerId, _params: rpc::ShuffleReply) {
     debug!("hyparview: shuffle_reply");
   }
 
-  pub fn message(&mut self, peer: PeerId, data: Vec<u8>) {
+  pub fn message(&mut self, _peer: PeerId, _data: Vec<u8>) {
     debug!("hyparview: message");
-  }
-
-  /// invoked by the behaviour when a connection with a peer is dropped.
-  /// This ensures that dropped connections on not remain in the active view.
-  ///
-  /// We are not moving this node the the passive view here. That happens only
-  /// on graceful disconnects.
-  pub fn peer_disconnected(&mut self, peer: PeerId) {
-    self.active.retain(|p| p.peer_id != peer);
   }
 }
 
@@ -290,13 +297,24 @@ impl HyParView {
             .build(),
           handler: EpisubHandler::new(self.config.max_transmit_size),
         });
+
+      self
+        .out_events
+        .push_back(EpisubNetworkBehaviourAction::GenerateEvent(
+          EpisubEvent::ActivePeerAdded(node.peer_id),
+        ));
     }
   }
 
   fn add_node_to_passive_view(&mut self, node: AddressablePeer) {
-    if self.passive.len() < self.max_passive_view_size() {
-      debug!("Adding peer to passive view: {:?}", node);
-      self.passive.insert(node);
+    debug!("Adding peer to passive view: {:?}", node);
+    self.passive.push_back(node);
+    if self.passive.len() > self.max_passive_view_size() {
+      self
+        .passive
+        .make_contiguous()
+        .shuffle(&mut rand::thread_rng());
+      self.passive.pop_front();
     }
   }
 }

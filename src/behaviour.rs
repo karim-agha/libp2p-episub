@@ -12,8 +12,8 @@ use libp2p::{
   },
   multiaddr::Protocol,
   swarm::{
-    CloseConnection, NetworkBehaviour, NetworkBehaviourAction, NotifyHandler,
-    PollParameters,
+    CloseConnection, DialError, NetworkBehaviour, NetworkBehaviourAction,
+    NotifyHandler, PollParameters,
   },
 };
 use std::{
@@ -59,6 +59,8 @@ pub enum EpisubEvent {
   Subscribed,
   Unsubscibed,
   EpisubNotSupported,
+  ActivePeerAdded(PeerId),
+  ActivePeerRemoved(PeerId),
 }
 
 pub(crate) type EpisubNetworkBehaviourAction =
@@ -310,13 +312,15 @@ impl NetworkBehaviour for Episub {
     &mut self,
     peer_id: Option<PeerId>,
     _handler: Self::ProtocolsHandler,
-    error: &libp2p::swarm::DialError,
+    error: &DialError,
   ) {
-    if let Some(peer_id) = peer_id {
-      debug!("Dialing peer {} failed: {:?}", peer_id, error);
+    if !matches!(error, DialError::DialPeerConditionFalse(_)) {
+      if let Some(peer_id) = peer_id {
+        debug!("Dialing peer {} failed: {:?}", peer_id, error);
 
-      for (_, view) in self.topics.iter_mut() {
-        view.peer_disconnected(peer_id);
+        for (_, view) in self.topics.iter_mut() {
+          view.disconnect(peer_id, false);
+        }
       }
     }
   }
@@ -334,7 +338,7 @@ impl NetworkBehaviour for Episub {
     );
 
     for (_, view) in self.topics.iter_mut() {
-      view.peer_disconnected(*peer_id);
+      view.disconnect(*peer_id, true);
     }
   }
 
@@ -382,11 +386,10 @@ impl NetworkBehaviour for Episub {
           }
         }
         Action::JoinAccepted(rpc::JoinAccepted { .. }) => {
-          warn!(
-            "received duplicate join accepted from peer {}, banning peer",
-            peer_id
+          debug!(
+            "We got added to active view for peer {} on topic {}",
+            peer_id, event.topic
           );
-          self.ban_peer(peer_id);
         }
         Action::ForwardJoin(rpc::ForwardJoin { ttl, peer }) => {
           if let Some(local) = self.local_node.as_ref() {
@@ -395,10 +398,7 @@ impl NetworkBehaviour for Episub {
                 view.forward_join(peer, ttl as usize, local.peer_id, peer_id)
               }
               Err(err) => {
-                warn!(
-                  "banning peer {} because of protocol violation: {:?}",
-                  peer_id, err
-                );
+                warn!("protocol violation: {:?}", err);
                 self.ban_peer(peer_id);
               }
             }

@@ -17,7 +17,7 @@ use chrono::Utc;
 use futures::StreamExt;
 use libp2p::{identity, swarm::SwarmEvent, Multiaddr, PeerId};
 
-use libp2p_episub::{Episub, NodeEvent, NodeUpdate};
+use libp2p_episub::{Episub, EpisubEvent, NodeEvent, NodeUpdate};
 use structopt::StructOpt;
 use tokio::{net::UdpSocket, sync::mpsc::unbounded_channel};
 use tracing::{info, trace, Level};
@@ -137,6 +137,31 @@ async fn main() -> Result<()> {
         match event {
           SwarmEvent::Behaviour(b) => {
             info!("swarm behaviour: {:?}", b);
+            match b {
+              EpisubEvent::ActivePeerAdded(p) => {
+                send_update(
+                  &audit_sock,
+                  NodeUpdate {
+                    node_id: local_peer_id,
+                    peer_id: p,
+                    event: NodeEvent::Connected,
+                  },
+                )
+                .await?;
+              },
+              EpisubEvent::ActivePeerRemoved(p) => {
+                send_update(
+                  &audit_sock,
+                  NodeUpdate {
+                    node_id: local_peer_id,
+                    peer_id: p,
+                    event: NodeEvent::Disconnected,
+                  },
+                )
+                .await?;
+              },
+              _ => {}
+        }
           }
           SwarmEvent::IncomingConnection { send_back_addr, local_addr } => {
             msg_tx_clone.send(send_back_addr.to_vec()).unwrap();
