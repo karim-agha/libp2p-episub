@@ -92,7 +92,7 @@ async fn main() -> Result<()> {
     let mut episub = Episub::new();
 
     // subscribe to the topic specified on the command line
-    episub.subscribe(opts.topic)?;
+    episub.subscribe(opts.topic);
 
     // build the swarm
     libp2p::Swarm::new(transport, episub, local_peer_id)

@@ -38,6 +38,7 @@ message ForwardJoin {
 }
 
 message Neighbor {
+	required AddressablePeer peer = 1;
 	required Priority priority = 2;
 
 	enum Priority {

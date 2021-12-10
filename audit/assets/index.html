@@ -100,7 +100,8 @@
         })
         nodes.add(nodeid);
         const layout = cy.layout({
-          name: 'circle'
+          name: 'circle',
+          animate: true,
         });
         layout.run();
       }
@@ -118,6 +119,11 @@
           }
         })
         edges.add(id);
+        const layout = cy.layout({
+          name: 'circle',
+          animate: true,
+        });
+        layout.run();
       }
     }
 
@@ -126,6 +132,11 @@
       if (edges.has(id)) {
         cy.remove('[id="' + id + '"]')
         edges.delete(id);
+        const layout = cy.layout({
+          name: 'circle',
+          animate: true,
+        });
+        layout.run();
       }
     }
 
