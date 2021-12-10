@@ -44,8 +44,8 @@ impl Default for Config {
       network_size: 1000,
       active_view_factor: 1,
       passive_view_factor: 5,
-      active_walk_length: 4,
-      passive_walk_length: 3,
+      active_walk_length: 3,
+      passive_walk_length: 2,
       shuffle_interval: Duration::from_secs(60),
       max_transmit_size: 1024 * 1024 * 100,
     }
@@ -306,6 +306,21 @@ impl NetworkBehaviour for Episub {
     }
   }
 
+  fn inject_dial_failure(
+    &mut self,
+    peer_id: Option<PeerId>,
+    _handler: Self::ProtocolsHandler,
+    error: &libp2p::swarm::DialError,
+  ) {
+    if let Some(peer_id) = peer_id {
+      debug!("Dialing peer {} failed: {:?}", peer_id, error);
+
+      for (_, view) in self.topics.iter_mut() {
+        view.peer_disconnected(peer_id);
+      }
+    }
+  }
+
   fn inject_connection_closed(
     &mut self,
     peer_id: &PeerId,
@@ -317,6 +332,10 @@ impl NetworkBehaviour for Episub {
       "Connection to peer {} closed on endpoint {:?}",
       peer_id, endpoint
     );
+
+    for (_, view) in self.topics.iter_mut() {
+      view.peer_disconnected(*peer_id);
+    }
   }
 
   fn inject_event(
@@ -345,7 +364,9 @@ impl NetworkBehaviour for Episub {
     }
 
     if self.pending_joins.contains(&event.topic) {
-      self.handle_join_accepted(peer_id, event.clone());
+      if self.handle_join_accepted(peer_id, event.clone()) {
+        return;
+      }
     }
 
     if let Some(view) = self.topics.get_mut(&event.topic) {
@@ -367,8 +388,21 @@ impl NetworkBehaviour for Episub {
           );
           self.ban_peer(peer_id);
         }
-        Action::ForwardJoin(params) => {
-          view.forward_join(peer_id, params);
+        Action::ForwardJoin(rpc::ForwardJoin { ttl, peer }) => {
+          if let Some(local) = self.local_node.as_ref() {
+            match peer.try_into() {
+              Ok(peer) => {
+                view.forward_join(peer, ttl as usize, local.peer_id, peer_id)
+              }
+              Err(err) => {
+                warn!(
+                  "banning peer {} because of protocol violation: {:?}",
+                  peer_id, err
+                );
+                self.ban_peer(peer_id);
+              }
+            }
+          }
         }
         Action::Neighbor(rpc::Neighbor { priority }) => {
           view.neighbor(peer_id, priority);
@@ -455,9 +489,9 @@ impl Episub {
   /// Handles the first JOIN request to a topic that we are trying to subscribe to.
   /// Once we have at least one other node in the topic active set, se will stop
   /// proactively sending JOIN requests to any dialed peer.
-  fn handle_join_accepted(&mut self, peer_id: PeerId, event: rpc::Rpc) {
+  fn handle_join_accepted(&mut self, peer_id: PeerId, event: rpc::Rpc) -> bool {
     if self.local_node.is_none() {
-      return; // we still don't know who we are.
+      return false; // we still don't know who we are.
     }
 
     if let Some(rpc::rpc::Action::JoinAccepted(rpc::JoinAccepted { peer })) =
@@ -477,7 +511,8 @@ impl Episub {
                 .get(&peer_id)
                 .unwrap()
                 .clone()],
-            })
+            });
+            return true;
           } else {
             warn!("Got join-accept for a topic we didn't request to join");
             self.ban_peer(peer_id);
@@ -488,6 +523,8 @@ impl Episub {
         self.ban_peer(peer_id);
       }
     }
+
+    false
   }
 
   fn ban_peer(&mut self, peer: PeerId) {

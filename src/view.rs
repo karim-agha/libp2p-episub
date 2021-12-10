@@ -2,19 +2,23 @@
 //! [HyParView]: http://asc.di.fct.unl.pt/~jleitao/pdf/dsn07-leitao.pdf
 
 use crate::{
-  behaviour::EpisubNetworkBehaviourAction, error::FormatError, rpc, Config,
+  behaviour::EpisubNetworkBehaviourAction, error::FormatError,
+  handler::EpisubHandler, rpc, Config,
 };
 use futures::Future;
 use libp2p::{
   core::{Multiaddr, PeerId},
-  swarm::NotifyHandler,
+  swarm::{
+    dial_opts::{DialOpts, PeerCondition},
+    NotifyHandler,
+  },
 };
 use std::{
   collections::{HashSet, VecDeque},
   pin::Pin,
   task::{Context, Poll},
 };
-use tracing::debug;
+use tracing::{debug, warn};
 
 /// A partial view is a set of node identiﬁers maintained locally at each node that is a small
 /// subset of the identiﬁers of all nodes in the system (ideally, of logarithmic size with the
@@ -139,6 +143,24 @@ impl HyParView {
       self.passive.insert(dropped);
     }
 
+    // notify the peer that we have accepted their join request, so
+    // it can add us to its active view, and in case it is the first
+    // join request on a pending topic, it moves to the fully joined
+    // state
+    self
+      .out_events
+      .push_back(EpisubNetworkBehaviourAction::NotifyHandler {
+        peer_id: peer.peer_id,
+        handler: NotifyHandler::Any,
+        event: rpc::Rpc {
+          topic: self.topic.clone(),
+          action: Some(rpc::rpc::Action::JoinAccepted(rpc::JoinAccepted {
+            peer: peer.clone().into(),
+          })),
+        },
+      });
+
+    // the send a forward-join to all members of our current active view
     for active_peer in self.active.iter().collect::<Vec<_>>() {
       self
         .out_events
@@ -155,25 +177,82 @@ impl HyParView {
         });
     }
 
-    debug!("Adding peer to active view: {:?}", peer);
-    self.active.insert(peer.clone());
+    self.add_node_to_active_view(peer);
   }
 
   pub fn join_accepted(&mut self, peer: AddressablePeer) {
-    debug!("Adding peer to active view: {:?}", peer);
-    self.active.insert(peer);
+    self.add_node_to_active_view(peer);
   }
 
-  pub fn forward_join(&mut self, from: PeerId, params: rpc::ForwardJoin) {
-    debug!("hyparview: forward_join");
+  pub fn forward_join(
+    &mut self,
+    peer: AddressablePeer,
+    ttl: usize,
+    local_node: PeerId,
+    sender: PeerId,
+  ) {
+    if peer.peer_id == local_node {
+      debug!("ignoring cyclic forward join from this node");
+      return;
+    }
+
+    if ttl == 0 {
+      return;
+    }
+
+    // already have it in the active view,
+    // this is a duplicate/cyclic message
+    if self.active().any(|p| p.peer_id == peer.peer_id) {
+      return;
+    }
+
+    if self.active.len() < self.max_active_view_size() {
+      self.add_node_to_active_view(peer.clone());
+    } else {
+      self.add_node_to_passive_view(peer.clone());
+    }
+
+    for n in &self.active {
+      if n.peer_id == sender {
+        continue;
+      }
+      self
+        .out_events
+        .push_back(EpisubNetworkBehaviourAction::NotifyHandler {
+          peer_id: n.peer_id,
+          handler: NotifyHandler::Any,
+          event: rpc::Rpc {
+            topic: self.topic.clone(),
+            action: Some(rpc::rpc::Action::ForwardJoin(rpc::ForwardJoin {
+              peer: peer.clone().into(),
+              ttl: (ttl - 1) as u32,
+            })),
+          },
+        });
+    }
   }
 
   pub fn neighbor(&mut self, peer: PeerId, priority: i32) {
     debug!("hyparview: neighbor");
   }
 
+  /// Handles DISCONNECT message, if the parameter 'alive' is true, then
+  /// the peer is moved from active view to passive view, otherwise it is
+  /// remove completely from all views.
   pub fn disconnect(&mut self, peer: PeerId, alive: bool) {
     debug!("hyparview: disconnect");
+    if alive {
+      let found: Vec<_> = self
+        .active()
+        .filter(|p| p.peer_id == peer)
+        .cloned()
+        .collect();
+      found
+        .into_iter()
+        .for_each(|p| self.add_node_to_passive_view(p));
+    }
+
+    self.active.retain(|p| p.peer_id != peer);
   }
 
   pub fn shuffle(&mut self, peer: PeerId, params: rpc::Shuffle) {
@@ -186,6 +265,39 @@ impl HyParView {
 
   pub fn message(&mut self, peer: PeerId, data: Vec<u8>) {
     debug!("hyparview: message");
+  }
+
+  /// invoked by the behaviour when a connection with a peer is dropped.
+  /// This ensures that dropped connections on not remain in the active view.
+  ///
+  /// We are not moving this node the the passive view here. That happens only
+  /// on graceful disconnects.
+  pub fn peer_disconnected(&mut self, peer: PeerId) {
+    self.active.retain(|p| p.peer_id != peer);
+  }
+}
+
+impl HyParView {
+  fn add_node_to_active_view(&mut self, node: AddressablePeer) {
+    if self.active.insert(node.clone()) {
+      debug!("Adding peer to active view: {:?}", node);
+      self
+        .out_events
+        .push_back(EpisubNetworkBehaviourAction::Dial {
+          opts: DialOpts::peer_id(node.peer_id)
+            .addresses(node.addresses)
+            .condition(PeerCondition::Disconnected)
+            .build(),
+          handler: EpisubHandler::new(self.config.max_transmit_size),
+        });
+    }
+  }
+
+  fn add_node_to_passive_view(&mut self, node: AddressablePeer) {
+    if self.passive.len() < self.max_passive_view_size() {
+      debug!("Adding peer to passive view: {:?}", node);
+      self.passive.insert(node);
+    }
   }
 }
 
@@ -201,10 +313,24 @@ impl Future for HyParView {
 }
 
 /// This struct uniquely identifies a node on the internet.
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct AddressablePeer {
   pub peer_id: PeerId,
   pub addresses: Vec<Multiaddr>,
+}
+
+impl PartialEq for AddressablePeer {
+  fn eq(&self, other: &Self) -> bool {
+    self.peer_id == other.peer_id
+  }
+}
+
+impl Eq for AddressablePeer {}
+
+impl std::hash::Hash for AddressablePeer {
+  fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+    self.peer_id.hash(state);
+  }
 }
 
 /// Conversion from wire format to internal representation
