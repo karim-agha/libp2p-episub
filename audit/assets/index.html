@@ -37,11 +37,6 @@
 <body>
   <h1>P2P Protocols Lab</h1>
   <div class="container">
-    <div class="row">
-      <div class="col-8">
-      </div>
-      <div class="col-4">stats</div>
-    </div>
     <div id="cy"></div>
   </div>
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"
@@ -101,7 +96,17 @@
         nodes.add(nodeid);
         const layout = cy.layout({
           name: 'circle',
-          animate: true,
+        });
+        layout.run();
+      }
+    }
+
+    const removeNode = (nodeid) => {
+      if (nodes.has(nodeid)) {
+        cy.remove('[id="' + nodeid + '"]');
+        nodes.remove(nodeid);
+        const layout = cy.layout({
+          name: 'circle',
         });
         layout.run();
       }
@@ -119,11 +124,6 @@
           }
         })
         edges.add(id);
-        const layout = cy.layout({
-          name: 'circle',
-          animate: true,
-        });
-        layout.run();
       }
     }
 
@@ -132,11 +132,6 @@
       if (edges.has(id)) {
         cy.remove('[id="' + id + '"]')
         edges.delete(id);
-        const layout = cy.layout({
-          name: 'circle',
-          animate: true,
-        });
-        layout.run();
       }
     }
 
@@ -151,6 +146,10 @@
 
       if (data.event === "Up") {
         addNode(data.node_id);
+      }
+
+      if (data.event === "Down") {
+        removeNode(data.node_id);
       }
 
       if (data.event === "Connected") {

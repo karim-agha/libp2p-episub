@@ -58,7 +58,7 @@ pub struct HyParView {
   out_events: VecDeque<EpisubNetworkBehaviourAction>,
 }
 
-/// Access to Partial View network overlays
+/// Public view functions
 impl HyParView {
   pub fn new(topic: String, config: Config, local: AddressablePeer) -> Self {
     Self {
@@ -91,15 +91,17 @@ impl HyParView {
     self.passive.iter()
   }
 
-  pub fn is_empty(&self) -> bool {
-    self.active.is_empty()
-  }
-
   pub fn all_peers_id(&self) -> impl Iterator<Item = &PeerId> {
     self
       .active()
       .map(|ap| &ap.peer_id)
       .chain(self.passive().map(|p| &p.peer_id))
+  }
+
+  /// Starved topics are ones where the active view
+  /// doesn't have a full set of nodes in it.
+  pub fn is_starved(&self) -> bool {
+    self.active.len() < self.max_active_view_size()
   }
 }
 
@@ -122,15 +124,16 @@ impl HyParView {
   /// node.
   fn free_up_active_slot(&mut self) {
     if self.active.len() >= self.max_active_view_size() {
-      let dropped = self.active.drain().next();
-      if let Some(dropped) = dropped {
+      let random = self.passive.iter().choose(&mut rand::thread_rng()).cloned();
+      if let Some(random) = random {
         debug!(
           "Moving peer {} from active view to passive.",
-          dropped.peer_id
+          random.peer_id
         );
+        self.active.remove(&random);
         self.out_events.push_back(
           EpisubNetworkBehaviourAction::NotifyHandler {
-            peer_id: dropped.peer_id,
+            peer_id: random.peer_id,
             handler: NotifyHandler::Any,
             event: rpc::Rpc {
               topic: self.topic.clone(),
@@ -140,7 +143,12 @@ impl HyParView {
             },
           },
         );
-        self.add_node_to_passive_view(dropped);
+        self
+          .out_events
+          .push_back(EpisubNetworkBehaviourAction::GenerateEvent(
+            EpisubEvent::ActivePeerRemoved(random.peer_id),
+          ));
+        self.add_node_to_passive_view(random);
       }
     }
   }
@@ -179,7 +187,7 @@ impl HyParView {
     // it can add us to its active view, and in case it is the first
     // join request on a pending topic, it moves to the fully joined
     // state
-    self.add_node_to_active_view(peer.clone(), true);
+    self.add_node_to_active_view(peer, true);
   }
 
   pub fn forward_join(
@@ -254,12 +262,19 @@ impl HyParView {
   pub fn disconnect(&mut self, peer: PeerId, alive: bool) {
     debug!("disconnecting peer {}, from passive: {}", peer, alive);
     if alive {
-      let found: Vec<_> = self
+      // because both references to self are mut,
+      // this works around the borrow checker,
+      // although the actual fields in self.active
+      // and the ones accessed by self.add_node_to_passive_view
+      // are disjoin, the compiler is seeing it as double
+      // mut borrow to self.
+      #[allow(clippy::needless_collect)]
+      let selected: Vec<_> = self
         .active()
         .filter(|p| p.peer_id == peer)
         .cloned()
         .collect();
-      found
+      selected
         .into_iter()
         .for_each(|p| self.add_node_to_passive_view(p));
     } else {
@@ -307,9 +322,9 @@ impl HyParView {
         .collect::<HashSet<_>>()
         .difference(&deduped_passive)
         .cloned()
-        .take(self.config.shuffle_max_size)
-        .collect(),
-    );
+        .choose_multiple(
+          &mut rand::thread_rng(),
+          self.config.shuffle_max_size));
 
     // this is the unique list of peers that the remote node knows about
     // and we don't know about.
@@ -320,8 +335,8 @@ impl HyParView {
     });
 
     // append the newly added unique peers to our passive view
-    deduped_passive.iter().for_each(|p| {
-      self.add_node_to_passive_view(p.clone());
+    deduped_passive.into_iter().for_each(|p| {
+      self.add_node_to_passive_view(p);
     });
 
     // if we are blow the desired number of active nodes,
@@ -592,21 +607,17 @@ impl TryFrom<rpc::AddressablePeer> for AddressablePeer {
   }
 }
 
-/// Conversion from internal representation to wire format
-impl Into<rpc::AddressablePeer> for AddressablePeer {
-  fn into(self) -> rpc::AddressablePeer {
+impl From<AddressablePeer> for rpc::AddressablePeer {
+  fn from(val: AddressablePeer) -> Self {
     rpc::AddressablePeer {
-      peer_id: self.peer_id.to_bytes(),
-      addresses: self.addresses.into_iter().map(|a| a.to_vec()).collect(),
+      peer_id: val.peer_id.to_bytes(),
+      addresses: val.addresses.into_iter().map(|a| a.to_vec()).collect(),
     }
   }
 }
 
-impl Into<rpc::AddressablePeer> for &AddressablePeer {
-  fn into(self) -> rpc::AddressablePeer {
-    rpc::AddressablePeer {
-      peer_id: self.peer_id.to_bytes(),
-      addresses: self.addresses.iter().map(|a| a.to_vec()).collect(),
-    }
+impl From<&AddressablePeer> for rpc::AddressablePeer {
+  fn from(val: &AddressablePeer) -> Self {
+    val.clone().into()
   }
 }

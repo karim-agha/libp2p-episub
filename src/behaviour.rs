@@ -1,3 +1,18 @@
+//! Episub: Proximity Aware Epidemic PubSub for libp2p
+//!
+//! This behaviour implements a large-scale gossiping protocol that is based on three
+//! main ideas introduced by the following papers:
+//!
+//!   1. Epidemic Broadcast Trees, 2007 (DOI: 10.1109/SRDS.2007.27)
+//!   2. HyParView: a membership protocol for reliable gossip-based broadcast, 2007 (DOI: 10.1109/DSN.2007.56)
+//!   3. GoCast: Gossip-enhanced Overlay Multicast for Fast and Dependable Group Communication, 2005
+//! 
+//! Those ideas were first compiled into one protocol originally by @vyzo in 
+//! https://github.com/libp2p/specs/blob/master/pubsub/gossipsub/episub.md
+//! 
+//! This implementation introduces a number of small changes to the original proposal
+//! that surfaced during implementation and testing of this code.
+
 use crate::{
   error::FormatError,
   handler::EpisubHandler,
@@ -30,26 +45,43 @@ use tracing::{debug, trace, warn};
 pub struct Config {
   /// Estimated number of online nodes joining one topic
   pub network_size: usize,
+
+  /// HyParView Active View constant
+  /// active view size = Ln(N) + C
   pub active_view_factor: usize,
+
+  /// HyParView Passive View constant
+  /// active view size = C * Ln(N)
   pub passive_view_factor: usize,
+
+  /// Maximum size of a message, this applies to
+  /// control and payload messages
   pub max_transmit_size: usize,
+
+  /// The number for ForwardJoin forwards (ttl)
   pub active_walk_length: usize,
-  pub passive_walk_length: usize,
+
+  /// The number of random active + passive
+  /// nodes exchanged in a shuffle operation
   pub shuffle_max_size: usize,
+
+  /// How often a peer shuffle happens
+  /// with a random active peer
   pub shuffle_interval: Duration,
 }
 
 impl Default for Config {
+
+  /// Defaults inspired by the HyParView paper
   fn default() -> Self {
     Self {
-      network_size: 1000,
-      active_view_factor: 1,
+      network_size: 10000,
+      active_view_factor: 6,
       passive_view_factor: 5,
       active_walk_length: 3,
-      passive_walk_length: 2,
-      shuffle_max_size: 10,
-      shuffle_interval: Duration::from_secs(30),
-      max_transmit_size: 1024 * 1024 * 100,
+      shuffle_max_size: 15,
+      shuffle_interval: Duration::from_secs(60),
+      max_transmit_size: 1_024_000, // 1 MB
     }
   }
 }
@@ -58,9 +90,8 @@ impl Default for Config {
 #[derive(Debug)]
 pub enum EpisubEvent {
   Message,
-  Subscribed,
-  Unsubscibed,
-  EpisubNotSupported,
+  Subscribed(String),
+  Unsubscibed(String),
   ActivePeerAdded(PeerId),
   ActivePeerRemoved(PeerId),
 }
@@ -125,6 +156,12 @@ impl Episub {
   }
 }
 
+impl Default for Episub {
+  fn default() -> Self {
+    Self::new()
+  }
+}
+
 impl Episub {
   /// Sends an rpc message to a connected peer.
   ///
@@ -168,6 +205,11 @@ impl Episub {
           topic.clone(),
           HyParView::new(topic.clone(), self.config.clone(), node.clone()),
         );
+        self
+          .out_events
+          .push_back(EpisubNetworkBehaviourAction::GenerateEvent(
+            EpisubEvent::Subscribed(topic),
+          ));
       } else {
         self.pending_topics.insert(topic);
       }
@@ -204,6 +246,13 @@ impl Episub {
           );
         }
       }
+
+      self
+        .out_events
+        .push_back(EpisubNetworkBehaviourAction::GenerateEvent(
+          EpisubEvent::Unsubscibed(topic),
+        ));
+
       true
     }
   }
@@ -258,7 +307,7 @@ impl NetworkBehaviour for Episub {
         // send a join request to any dialer
         self.request_join_for_starving_topics(*peer_id);
       } else {
-        self.early_peers.insert(peer_id.clone());
+        self.early_peers.insert(*peer_id);
       }
     }
   }
@@ -398,8 +447,8 @@ impl NetworkBehaviour for Episub {
         Action::ShuffleReply(params) => {
           view.shuffle_reply(peer_id, params);
         }
-        Action::Message(rpc::Message { data }) => {
-          view.message(peer_id, data);
+        Action::Message(rpc::Message { payload }) => {
+          view.message(peer_id, payload);
         }
       }
     } else {
@@ -409,7 +458,7 @@ impl NetworkBehaviour for Episub {
       self
         .out_events
         .push_back(EpisubNetworkBehaviourAction::NotifyHandler {
-          peer_id: peer_id,
+          peer_id,
           handler: NotifyHandler::Any,
           event: rpc::Rpc {
             topic: event.topic,
@@ -487,6 +536,14 @@ impl Episub {
 
         // request JOINS for peers that have been dialed before we started
         // listening and knew our identity.
+
+        // because both references to self are mut,
+        // this works around the borrow checker,
+        // although the actual fields in self.early_peers
+        // and the ones accessed by self.request_join...()
+        // are disjoin, the compiler is seeing it as double
+        // mut borrow to self.
+        #[allow(clippy::needless_collect)]
         let early_peers: Vec<PeerId> = self.early_peers.drain().collect();
         early_peers
           .into_iter()
@@ -517,7 +574,7 @@ impl Episub {
     let starved_topics: Vec<String> = self
       .topics
       .iter()
-      .filter(|(_, v)| v.is_empty())
+      .filter(|(_, v)| v.is_starved())
       .map(|(k, _)| k)
       .cloned()
       .collect();

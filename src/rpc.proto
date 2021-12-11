@@ -63,5 +63,5 @@ message Disconnect {
 }
 
 message Message {
-	required bytes data = 1;
+	required bytes payload = 1;
 }

@@ -31,6 +31,8 @@ where
 {
   type Output = Framed<TSocket, EpisubCodec>;
   type Error = EpisubHandlerError;
+
+  #[allow(clippy::type_complexity)] // oh well
   type Future =
     Pin<Box<dyn Future<Output = Result<Self::Output, Self::Error>> + Send>>;
 
@@ -50,6 +52,8 @@ where
 {
   type Output = Framed<TSocket, EpisubCodec>;
   type Error = EpisubHandlerError;
+  
+  #[allow(clippy::type_complexity)] // oh well
   type Future =
     Pin<Box<dyn Future<Output = Result<Self::Output, Self::Error>> + Send>>;
 
