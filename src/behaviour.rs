@@ -47,8 +47,8 @@ impl Default for Config {
       passive_view_factor: 5,
       active_walk_length: 3,
       passive_walk_length: 2,
-      shuffle_max_size: 20,
-      shuffle_interval: Duration::from_secs(60),
+      shuffle_max_size: 10,
+      shuffle_interval: Duration::from_secs(30),
       max_transmit_size: 1024 * 1024 * 100,
     }
   }

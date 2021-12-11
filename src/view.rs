@@ -13,6 +13,7 @@ use libp2p::{
     NotifyHandler,
   },
 };
+use rand::prelude::IteratorRandom;
 use std::{
   collections::{HashSet, VecDeque},
   pin::Pin,
@@ -412,7 +413,10 @@ impl HyParView {
               topic: self.topic.clone(),
               action: Some(rpc::rpc::Action::Neighbor(rpc::Neighbor {
                 peer: self.local_node.clone().into(),
-                priority: rpc::neighbor::Priority::Low.into(),
+                priority: match self.active.is_empty() {
+                  true => rpc::neighbor::Priority::High.into(),
+                  false => rpc::neighbor::Priority::Low.into(),
+                },
               })),
             },
           },
@@ -432,7 +436,11 @@ impl HyParView {
       debug!("Adding peer to passive view: {:?}", node);
       self.passive.insert(node);
       if self.passive.len() > self.max_passive_view_size() {
-        self.passive.drain().next();
+        if let Some(random) =
+          self.passive().choose(&mut rand::thread_rng()).cloned()
+        {
+          self.passive.remove(&random);
+        }
       }
     }
   }
@@ -453,13 +461,21 @@ impl HyParView {
             origin: self.local_node.clone().into(),
             active: self
               .active()
-              .take(self.config.shuffle_max_size)
+              .choose_multiple(
+                &mut rand::thread_rng(),
+                self.config.shuffle_max_size,
+              )
+              .iter()
               .cloned()
               .map(|a| a.into())
               .collect(),
             passive: self
               .passive()
-              .take(self.config.shuffle_max_size)
+              .choose_multiple(
+                &mut rand::thread_rng(),
+                self.config.shuffle_max_size,
+              )
+              .iter()
               .cloned()
               .map(|p| p.into())
               .collect(),
@@ -502,7 +518,7 @@ impl HyParView {
 
   fn maybe_move_random_passive_to_active(&mut self) {
     while self.active.len() < self.max_active_view_size() {
-      let random = self.passive.drain().next();
+      let random = self.passive.iter().choose(&mut rand::thread_rng()).cloned();
       if let Some(random) = random {
         self.add_node_to_active_view(random, true);
       } else {
@@ -522,9 +538,12 @@ impl Future for HyParView {
     if Instant::now().duration_since(self.last_shuffle)
       > self.config.shuffle_interval
     {
-      let aps: Vec<_> = self.active().map(|p| p.peer_id).collect();
-      aps.iter().for_each(|p| self.send_shuffle(*p));
-      self.last_shuffle = Instant::now();
+      if let Some(random) =
+        self.active().choose(&mut rand::thread_rng()).cloned()
+      {
+        self.send_shuffle(random.peer_id);
+        self.last_shuffle = Instant::now();
+      }
     }
 
     if let Some(event) = self.out_events.pop_front() {
@@ -579,6 +598,15 @@ impl Into<rpc::AddressablePeer> for AddressablePeer {
     rpc::AddressablePeer {
       peer_id: self.peer_id.to_bytes(),
       addresses: self.addresses.into_iter().map(|a| a.to_vec()).collect(),
+    }
+  }
+}
+
+impl Into<rpc::AddressablePeer> for &AddressablePeer {
+  fn into(self) -> rpc::AddressablePeer {
+    rpc::AddressablePeer {
+      peer_id: self.peer_id.to_bytes(),
+      addresses: self.addresses.iter().map(|a| a.to_vec()).collect(),
     }
   }
 }
