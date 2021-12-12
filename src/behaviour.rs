@@ -1,18 +1,3 @@
-//! Episub: Proximity Aware Epidemic PubSub for libp2p
-//!
-//! This behaviour implements a large-scale gossiping protocol that is based on three
-//! main ideas introduced by the following papers:
-//!
-//!   1. Epidemic Broadcast Trees, 2007 (DOI: 10.1109/SRDS.2007.27)
-//!   2. HyParView: a membership protocol for reliable gossip-based broadcast, 2007 (DOI: 10.1109/DSN.2007.56)
-//!   3. GoCast: Gossip-enhanced Overlay Multicast for Fast and Dependable Group Communication, 2005
-//! 
-//! Those ideas were first compiled into one protocol originally by @vyzo in 
-//! https://github.com/libp2p/specs/blob/master/pubsub/gossipsub/episub.md
-//! 
-//! This implementation introduces a number of small changes to the original proposal
-//! that surfaced during implementation and testing of this code.
-
 use crate::{
   error::FormatError,
   handler::EpisubHandler,
@@ -307,6 +292,9 @@ impl NetworkBehaviour for Episub {
         // send a join request to any dialer
         self.request_join_for_starving_topics(*peer_id);
       } else {
+
+        // otherwise keep note of this peer and send a join 
+        // request when we know who we are.
         self.early_peers.insert(*peer_id);
       }
     }
@@ -336,8 +324,8 @@ impl NetworkBehaviour for Episub {
     if !matches!(error, DialError::DialPeerConditionFalse(_)) {
       if let Some(peer_id) = peer_id {
         debug!("Dialing peer {} failed: {:?}", peer_id, error);
-
         for (_, view) in self.topics.iter_mut() {
+          // remove from active and passive
           view.disconnect(peer_id, false);
         }
       }
@@ -357,6 +345,7 @@ impl NetworkBehaviour for Episub {
     );
 
     for (_, view) in self.topics.iter_mut() {
+      // remove from active keep in passive
       view.disconnect(*peer_id, true);
     }
   }
@@ -486,7 +475,7 @@ impl NetworkBehaviour for Episub {
 
     // next bubble up events for all topics
     // todo, randomize polling among topics, otherwise
-    // some topics might be starved
+    // some topics might be starved by more active ones
     for view in self.topics.values_mut() {
       let pinned = Pin::new(view);
       if let Poll::Ready(event) = pinned.poll(cx) {

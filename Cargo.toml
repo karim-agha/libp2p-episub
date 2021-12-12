@@ -20,7 +20,6 @@ rand = "0.8"
 thiserror = "1.0.30"
 asynchronous-codec = "0.6"
 unsigned-varint = { version = "0.7.0", features = ["asynchronous_codec"] }
-serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
 

@@ -322,9 +322,8 @@ impl HyParView {
         .collect::<HashSet<_>>()
         .difference(&deduped_passive)
         .cloned()
-        .choose_multiple(
-          &mut rand::thread_rng(),
-          self.config.shuffle_max_size));
+        .choose_multiple(&mut rand::thread_rng(), self.config.shuffle_max_size),
+    );
 
     // this is the unique list of peers that the remote node knows about
     // and we don't know about.

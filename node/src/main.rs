@@ -13,11 +13,11 @@
 use std::{intrinsics::transmute, mem::size_of, time::Duration};
 
 use anyhow::Result;
+use audit_node::{NodeEvent, NodeUpdate};
 use chrono::Utc;
 use futures::StreamExt;
 use libp2p::{identity, swarm::SwarmEvent, Multiaddr, PeerId};
-
-use libp2p_episub::{Episub, EpisubEvent, NodeEvent, NodeUpdate};
+use libp2p_episub::{Episub, EpisubEvent};
 use structopt::StructOpt;
 use tokio::{net::UdpSocket, sync::mpsc::unbounded_channel};
 use tracing::{info, trace, Level};
@@ -87,21 +87,15 @@ async fn main() -> Result<()> {
   .await?;
 
   // Create a Swarm to manage peers and events
-  let mut swarm = {
-    // build the behaviour
-    let mut episub = Episub::new();
-
-    // subscribe to the topic specified on the command line
-    episub.subscribe(opts.topic);
-
-    // build the swarm
-    libp2p::Swarm::new(transport, episub, local_peer_id)
-  };
+  let mut swarm = libp2p::Swarm::new(transport, Episub::new(), local_peer_id);
 
   // Listen on all interfaces and whatever port the OS assigns
   swarm
     .listen_on("/ip4/0.0.0.0/tcp/4001".parse().unwrap())
     .unwrap();
+
+  // subscribe to the topic specified on the command line
+  swarm.behaviour_mut().subscribe(opts.topic);
 
   // dial all bootstrap nodes
   opts

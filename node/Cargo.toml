@@ -13,6 +13,7 @@ categories = ["network-programming", "asynchornous"]
 
 [dependencies]
 libp2p-episub = { path = "../" }
+audit-node = { path = "../audit" }
 
 futures = "0.3.18"
 chrono = "0.4.19"

@@ -1,4 +1,5 @@
 use anyhow::Result;
+use audit_node::NodeUpdate;
 use axum::{
   extract::{
     ws::{Message, WebSocketUpgrade},
@@ -9,7 +10,6 @@ use axum::{
   routing::{get, get_service},
   AddExtensionLayer, Router,
 };
-use libp2p_episub::NodeUpdate;
 use serde_json::json;
 use std::{intrinsics::transmute, mem::size_of, net::SocketAddr};
 use tokio::{net::UdpSocket, sync::watch};
