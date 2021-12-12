@@ -1,6 +1,6 @@
 # Libp2p-Brisa: Proximity Aware Epidemic PubSub for libp2p
 
-This Rust library implements a `libp2p` behaviour for efficient large-scale pub/sub protocol based on ideas in the BRISA [1] paper.
+This Rust library implements a `libp2p` behaviour for efficient large-scale pub/sub protocol based on ideas in the [BRISA](https://citeseerx.ist.psu.edu/viewdoc/summary?doi=10.1.1.360.1724) paper.
 
 ## Running a topology with 201 peers:
 
@@ -63,6 +63,3 @@ while let Some(event) = swarm.next().await {
   }
 }
 ```
-
-
-[1]: B RISA: Combining Efﬁciency and Reliability in Epidemic Data Dissemination
