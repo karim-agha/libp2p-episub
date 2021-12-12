@@ -20,7 +20,7 @@ use libp2p::{identity, swarm::SwarmEvent, Multiaddr, PeerId};
 use libp2p_episub::{Config, Episub, EpisubEvent};
 use structopt::StructOpt;
 use tokio::{net::UdpSocket, sync::mpsc::unbounded_channel};
-use tracing::{info, trace, Level};
+use tracing::{error, info, trace, Level};
 
 static DEFAULT_BOOTSTRAP_NODE: &str = "/dnsaddr/bootstrap.libp2p.io";
 
@@ -47,9 +47,14 @@ struct CliOptions {
   size: usize,
 }
 
-async fn send_update(socket: &UdpSocket, update: NodeUpdate) -> Result<()> {
+async fn send_update(addr: &str, update: NodeUpdate) -> Result<()> {
   let buf: [u8; size_of::<NodeUpdate>()] = unsafe { transmute(update) };
-  socket.send(&buf).await?;
+  let audit_sock = UdpSocket::bind("0.0.0.0:9000").await?;
+  audit_sock.connect(addr).await?;
+  audit_sock.send(&buf).await.unwrap_or_else(|err| {
+    error!("failed to update audit node: {:?}", err);
+    return 0;
+  });
   Ok(())
 }
 
@@ -76,18 +81,19 @@ async fn main() -> Result<()> {
   let transport = libp2p::development_transport(local_key.clone()).await?;
 
   info!("audit addr: {:?}", opts.audit);
-  let audit_sock = UdpSocket::bind("0.0.0.0:9000").await?;
-  audit_sock.connect(opts.audit.as_str()).await?;
 
   send_update(
-    &audit_sock,
+    &opts.audit,
     NodeUpdate {
       node_id: local_peer_id,
       peer_id: local_peer_id,
       event: NodeEvent::Up,
     },
   )
-  .await?;
+  .await
+  .unwrap_or_else(|err| {
+    error!("Failed notifying audit node about node startup: {:?}", err);
+  });
 
   // Create a Swarm to manage peers and events
   let mut swarm = libp2p::Swarm::new(
@@ -114,7 +120,6 @@ async fn main() -> Result<()> {
     .for_each(|addr| swarm.dial(addr).unwrap());
 
   let (msg_tx, mut msg_rx) = unbounded_channel::<Vec<u8>>();
-  let msg_tx_clone = msg_tx.clone();
   tokio::spawn(async move {
     let local_peer_id = local_peer_id.clone();
     loop {
@@ -129,7 +134,9 @@ async fn main() -> Result<()> {
           )
           .into_bytes(),
         )
-        .unwrap();
+        .unwrap_or_else(|err| {
+          error!("periodic message thread error: {:?}", err);
+        })
       //info!("Broadcasted message from local peer");
     }
   });
@@ -144,7 +151,7 @@ async fn main() -> Result<()> {
             match b {
               EpisubEvent::ActivePeerAdded(p) => {
                 send_update(
-                  &audit_sock,
+                  &opts.audit,
                   NodeUpdate {
                     node_id: local_peer_id,
                     peer_id: p,
@@ -155,7 +162,7 @@ async fn main() -> Result<()> {
               },
               EpisubEvent::ActivePeerRemoved(p) => {
                 send_update(
-                  &audit_sock,
+                  &opts.audit,
                   NodeUpdate {
                     node_id: local_peer_id,
                     peer_id: p,
@@ -165,22 +172,14 @@ async fn main() -> Result<()> {
                 .await?;
               },
               _ => {}
-        }
-          }
-          SwarmEvent::IncomingConnection { send_back_addr, local_addr } => {
-            msg_tx_clone.send(send_back_addr.to_vec()).unwrap();
-            msg_tx_clone.send(local_addr.to_vec()).unwrap();
-          }
-          SwarmEvent::NewListenAddr { address, .. } => {
-            info!("Listening on {}", address);
-            msg_tx_clone.send(address.to_vec()).unwrap();
+            }
           }
           _ => trace!("swarm event: {:?}", event),
         }
       },
       Some(_sendmsg) = msg_rx.recv() => {
         //info!("placeholder for publishing message with content: {:?}", sendmsg);
-      }
+      },
     };
   }
 }

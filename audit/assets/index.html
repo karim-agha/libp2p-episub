@@ -54,7 +54,9 @@
           style: {
             'background-color': '#666',
             'label': 'data(id)',
-            'font-size': '8px'
+            'font-size': '8px',
+            'text-max-width': '50px',
+            'text-wrap': 'fade ellipsis'
           }
         },
 
@@ -160,7 +162,6 @@
 
       if (data.event === "Disconnected") {
         removeMessage(data.node_id, data.peer_id);
-        removeMessage(data.peer_id, data.node_id);
       }
     }
   </script>
