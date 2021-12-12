@@ -56,7 +56,6 @@ pub struct Config {
 }
 
 impl Default for Config {
-
   /// Defaults inspired by the HyParView paper
   fn default() -> Self {
     Self {
@@ -127,10 +126,10 @@ pub struct Episub {
 }
 
 impl Episub {
-  pub fn new() -> Self {
+  pub fn new(config: Config) -> Self {
     Self {
+      config,
       local_node: None,
-      config: Config::default(),
       topics: HashMap::new(),
       peer_addresses: HashMap::new(),
       banned_peers: HashSet::new(),
@@ -143,7 +142,7 @@ impl Episub {
 
 impl Default for Episub {
   fn default() -> Self {
-    Self::new()
+    Self::new(Config::default())
   }
 }
 
@@ -292,8 +291,7 @@ impl NetworkBehaviour for Episub {
         // send a join request to any dialer
         self.request_join_for_starving_topics(*peer_id);
       } else {
-
-        // otherwise keep note of this peer and send a join 
+        // otherwise keep note of this peer and send a join
         // request when we know who we are.
         self.early_peers.insert(*peer_id);
       }
@@ -365,9 +363,11 @@ impl NetworkBehaviour for Episub {
       return;
     }
 
-    debug!(
+    trace!(
       "inject_event, peerid: {}, connection: {:?}, event: {:?}",
-      peer_id, connection, event
+      peer_id,
+      connection,
+      event
     );
 
     if event.action.is_none() {

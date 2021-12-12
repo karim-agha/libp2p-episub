@@ -17,7 +17,7 @@ use audit_node::{NodeEvent, NodeUpdate};
 use chrono::Utc;
 use futures::StreamExt;
 use libp2p::{identity, swarm::SwarmEvent, Multiaddr, PeerId};
-use libp2p_episub::{Episub, EpisubEvent};
+use libp2p_episub::{Config, Episub, EpisubEvent};
 use structopt::StructOpt;
 use tokio::{net::UdpSocket, sync::mpsc::unbounded_channel};
 use tracing::{info, trace, Level};
@@ -42,6 +42,9 @@ struct CliOptions {
 
   #[structopt(long, about = "p2p audit node")]
   audit: String,
+
+  #[structopt(long, default_value = "100", about = "p2p audit node")]
+  size: usize,
 }
 
 async fn send_update(socket: &UdpSocket, update: NodeUpdate) -> Result<()> {
@@ -87,7 +90,14 @@ async fn main() -> Result<()> {
   .await?;
 
   // Create a Swarm to manage peers and events
-  let mut swarm = libp2p::Swarm::new(transport, Episub::new(), local_peer_id);
+  let mut swarm = libp2p::Swarm::new(
+    transport,
+    Episub::new(Config {
+      network_size: opts.size,
+      ..Config::default()
+    }),
+    local_peer_id,
+  );
 
   // Listen on all interfaces and whatever port the OS assigns
   swarm

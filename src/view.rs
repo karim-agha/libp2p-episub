@@ -20,7 +20,7 @@ use std::{
   task::{Context, Poll},
   time::Instant,
 };
-use tracing::debug;
+use tracing::{debug, trace};
 
 /// A partial view is a set of node identiﬁers maintained locally at each node that is a small
 /// subset of the identiﬁers of all nodes in the system (ideally, of logarithmic size with the
@@ -233,7 +233,6 @@ impl HyParView {
   }
 
   pub fn neighbor(&mut self, peer: AddressablePeer, priority: i32) {
-    debug!("hyparview: neighbor");
     if self.active.len() < self.max_active_view_size() {
       self.add_node_to_active_view(peer, false);
     } else {
@@ -260,7 +259,7 @@ impl HyParView {
   /// Also invoked by the behaviour when a connection with a peer is dropped.
   /// This ensures that dropped connections on not remain in the active view.
   pub fn disconnect(&mut self, peer: PeerId, alive: bool) {
-    debug!("disconnecting peer {}, from passive: {}", peer, alive);
+    debug!("disconnecting peer {}, from passive: {}", peer, !alive);
     if alive {
       // because both references to self are mut,
       // this works around the borrow checker,
@@ -447,7 +446,7 @@ impl HyParView {
 
   fn add_node_to_passive_view(&mut self, node: AddressablePeer) {
     if node.peer_id != self.local_node.peer_id {
-      debug!("Adding peer to passive view: {:?}", node);
+      trace!("Adding peer to passive view: {:?}", node);
       self.passive.insert(node);
       if self.passive.len() > self.max_passive_view_size() {
         if let Some(random) =
@@ -534,6 +533,8 @@ impl HyParView {
     while self.active.len() < self.max_active_view_size() {
       let random = self.passive.iter().choose(&mut rand::thread_rng()).cloned();
       if let Some(random) = random {
+        self.passive.remove(&random);
+        trace!("removing peer {:?} from passive view", random);
         self.add_node_to_active_view(random, true);
       } else {
         break; // we're out of passive nodes..
