@@ -15,7 +15,7 @@ use std::{
   pin::Pin,
   task::{Context, Poll},
 };
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 /// Represents a view of the network from one topic's perspective.
 ///
@@ -80,24 +80,7 @@ impl TopicMesh {
     match event.action.unwrap() {
       Action::Join(rpc::Join { ttl, peer }) => {
         if let Ok(peer) = peer.try_into() {
-          self.nodes.inject_join(peer, ttl);
-        } else {
-          return Err(RpcError::InvalidPeerId);
-        }
-      }
-      Action::JoinAccepted(rpc::JoinAccepted { peer }) => {
-        if let Ok(peer) = TryInto::<AddressablePeer>::try_into(peer) {
-          if peer.peer_id == self.local_node.peer_id {
-            debug!(
-              "We got added to active view for peer {} on topic {}",
-              peer_id, event.topic
-            );
-          } else {
-            return Err(RpcError::ImpersonatedPeer(
-              peer.peer_id,
-              self.local_node.peer_id,
-            ));
-          }
+          self.nodes.inject_join(peer_id, peer, ttl);
         } else {
           return Err(RpcError::InvalidPeerId);
         }
@@ -129,9 +112,17 @@ impl TopicMesh {
       Action::Disconnect(rpc::Disconnect { alive }) => {
         self.nodes.inject_disconnect(peer_id, alive);
       }
-      Action::Shuffle(params) => {
-        if let Ok(origin) = params.origin.clone().try_into() {
-          self.nodes.inject_shuffle(peer_id, params, origin);
+      Action::Shuffle(rpc::Shuffle { origin, nodes, ttl }) => {
+        if let Ok(origin) = origin.try_into() {
+          self.nodes.inject_shuffle(
+            peer_id,
+            ttl,
+            nodes
+              .into_iter()
+              .filter_map(|n| n.try_into().ok())
+              .collect(),
+            origin,
+          );
         } else {
           return Err(RpcError::InvalidPeerId);
         }

@@ -14,12 +14,11 @@ message Rpc {
 	oneof Action {
 		// hyparview
 		Join join = 2;
-		JoinAccepted joinAccepted = 3;
-		ForwardJoin forwardJoin = 4;
-		Neighbor neighbor = 5;
-		Shuffle shuffle = 6;
-		ShuffleReply shuffleReply = 7;
-		Disconnect disconnect = 8;
+		ForwardJoin forwardJoin = 3;
+		Neighbor neighbor = 4;
+		Shuffle shuffle = 5;
+		ShuffleReply shuffleReply = 6;
+		Disconnect disconnect = 7;
 		
 		// plumtree
 		Message message = 9;
@@ -32,10 +31,6 @@ message Rpc {
 message Join {
 	required uint32 ttl = 1;
 	required AddressablePeer peer = 2;
-}
-
-message JoinAccepted {
-	required AddressablePeer peer = 1;
 }
 
 message ForwardJoin {
@@ -56,8 +51,7 @@ message Neighbor {
 message Shuffle {
 	required uint32 ttl = 2;
 	required AddressablePeer origin = 3;
-	repeated AddressablePeer active = 4;
-	repeated AddressablePeer passive = 5;
+	repeated AddressablePeer nodes = 4;
 }
 
 message ShuffleReply {

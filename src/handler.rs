@@ -15,7 +15,6 @@ use std::{
   io,
   pin::Pin,
   task::{Context, Poll},
-  time::{Duration, Instant},
 };
 use tracing::{error, warn};
 
@@ -68,8 +67,7 @@ type EpisubHandlerEvent = ProtocolsHandlerEvent<
 >;
 
 impl EpisubHandler {
-  // temporary: used only for shuffle reply, then the connection is only
-  // open temporarily for 10 seconds and closed
+  // temporary: used only for shuffle reply, then the connection is closed
   pub fn new(max_transmit_size: usize, temporary: bool) -> Self {
     Self {
       listen_protocol: SubstreamProtocol::new(
@@ -78,7 +76,7 @@ impl EpisubHandler {
       ),
       keep_alive: match temporary {
         false => KeepAlive::Yes,
-        true => KeepAlive::Until(Instant::now() + Duration::from_secs(10)),
+        true => KeepAlive::No,
       },
       outbound_substream: None,
       inbound_substream: None,

@@ -52,15 +52,15 @@ mod rpc {
 mod behaviour;
 mod cache;
 mod codec;
+mod config;
 mod error;
 mod handler;
 mod protocol;
 mod topic;
 mod tree;
 mod view;
-mod config;
 
 pub use {
+  behaviour::{Episub, EpisubEvent},
   config::Config,
-  behaviour::{Episub, EpisubEvent}
 };

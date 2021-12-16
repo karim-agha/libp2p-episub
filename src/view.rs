@@ -50,6 +50,8 @@ pub struct HyParView {
   active: HashSet<AddressablePeer>,
   passive: HashSet<AddressablePeer>,
 
+  last_tick: Instant,
+
   // timestamp of the last outgoing periodic
   // passive peer shuffle operation.
   last_shuffle: Instant,
@@ -64,6 +66,7 @@ impl HyParView {
     Self {
       config,
       topic,
+      last_tick: Instant::now(),
       last_shuffle: Instant::now(),
       active: HashSet::new(),
       passive: HashSet::new(),
@@ -165,7 +168,12 @@ impl HyParView {
       });
   }
 
-  pub fn inject_join(&mut self, peer: AddressablePeer, ttl: u32) {
+  pub fn inject_join(
+    &mut self,
+    sender: PeerId,
+    peer: AddressablePeer,
+    ttl: u32,
+  ) {
     if self.active.contains(&peer) {
       return;
     }
@@ -182,7 +190,7 @@ impl HyParView {
 
     // the send a forward-join to all members of our current active view
     for active_peer in self.active.iter().collect::<Vec<_>>() {
-      if active_peer.peer_id != peer.peer_id {
+      if active_peer.peer_id != peer.peer_id && active_peer.peer_id != sender {
         self.out_events.push_back(
           EpisubNetworkBehaviourAction::NotifyHandler {
             peer_id: active_peer.peer_id,
@@ -212,7 +220,7 @@ impl HyParView {
       return;
     }
 
-    if ttl == 0 {
+    if ttl == 0 && !self.is_active(&peer.peer_id) {
       // if we're full, free up a slot and move a node to passive.
       self.free_up_active_slot();
     }
@@ -246,7 +254,7 @@ impl HyParView {
   }
 
   pub fn inject_neighbor(&mut self, peer: AddressablePeer, priority: i32) {
-    if self.starved() {
+    if self.starved() && !self.is_active(&peer.peer_id) {
       self.add_node_to_active_view(peer, false);
     } else {
       // high priority NEIGHBOR messages are sent by nodes
@@ -272,7 +280,6 @@ impl HyParView {
   /// Also invoked by the behaviour when a connection with a peer is dropped.
   /// This ensures that dropped connections on not remain in the active view.
   pub fn inject_disconnect(&mut self, peer: PeerId, alive: bool) {
-    debug!("disconnecting peer {}, from passive: {}", peer, !alive);
     if alive {
       // because both references to self are mut,
       // this works around the borrow checker,
@@ -293,15 +300,18 @@ impl HyParView {
       self.passive.retain(|p| p.peer_id != peer);
     }
 
-    self.active.retain(|p| p.peer_id != peer);
-    self
-      .out_events
-      .push_back(EpisubNetworkBehaviourAction::GenerateEvent(
-        EpisubEvent::ActivePeerRemoved(peer),
-      ));
-
-    // optionally, see if we need to topup our active connections
-    self.maybe_move_random_passive_to_active();
+    if self.active.contains(&AddressablePeer {
+      peer_id: peer,
+      addresses: HashSet::new(),
+    }) {
+      self
+        .out_events
+        .push_back(EpisubNetworkBehaviourAction::GenerateEvent(
+          EpisubEvent::ActivePeerRemoved(peer),
+        ));
+      self.active.retain(|p| p.peer_id != peer);
+      debug!("disconnecting peer {}, from passive: {}", peer, !alive);
+    }
   }
 
   /// When we receive a shuffle message from one of our neighbors,
@@ -312,21 +322,20 @@ impl HyParView {
   pub fn inject_shuffle(
     &mut self,
     from: PeerId,
-    mut params: rpc::Shuffle,
+    ttl: u32,
+    nodes: Vec<AddressablePeer>,
     origin: AddressablePeer,
   ) {
     let origin_peer_id = origin.peer_id;
-    let mut deduped_passive: HashSet<AddressablePeer> = params
-      .passive
+    let mut deduped_passive: HashSet<AddressablePeer> = nodes
       .iter()
-      .chain(params.active.iter())
       .filter_map(|p| p.clone().try_into().ok())
       .collect();
 
     // respond to the originator of the shuffle with the unique
     // nodes that we know about and they don't know about.
     self.send_shuffle_reply(
-      origin,
+      origin.clone(),
       self
         .active
         .union(&self.passive)
@@ -334,7 +343,10 @@ impl HyParView {
         .collect::<HashSet<_>>()
         .difference(&deduped_passive)
         .cloned()
-        .choose_multiple(&mut rand::thread_rng(), self.config.shuffle_max_size()),
+        .choose_multiple(
+          &mut rand::thread_rng(),
+          self.config.shuffle_max_size(),
+        ),
     );
 
     // this is the unique list of peers that the remote node knows about
@@ -350,31 +362,36 @@ impl HyParView {
       self.add_node_to_passive_view(p);
     });
 
-    // if we are blow the desired number of active nodes,
-    // and we have just learned about new passive nodes,
-    // try to topup the active nodes
-    self.maybe_move_random_passive_to_active();
-
     // The protocol mandates that the shuffle should be forwarded to
     // all active peers except the sender, as long as ttl is not zero.
-    if params.ttl != 0 {
-      params.ttl -= 1;
-      for peer in self.active.iter() {
-        // forward this shuffle request to all active peers except the
-        // original initiator of the shuffle and the immediate peer that
-        // forwarded this message to us
-        if peer.peer_id != from && origin_peer_id != peer.peer_id {
-          self.out_events.push_back(
-            EpisubNetworkBehaviourAction::NotifyHandler {
-              peer_id: peer.peer_id,
-              handler: NotifyHandler::Any,
-              event: rpc::Rpc {
-                topic: self.topic.clone(),
-                action: Some(rpc::rpc::Action::Shuffle(params.clone())),
-              },
+    if ttl != 0 {
+      // forward this shuffle request to a random active peers except the
+      // original initiator of the shuffle and the immediate peer that
+      // forwarded this message to us
+      if let Some(random) = self
+        .active
+        .iter()
+        .filter(|n| n.peer_id != from && origin_peer_id != n.peer_id)
+        .choose(&mut rand::thread_rng())
+      {
+        self.out_events.push_back(
+          EpisubNetworkBehaviourAction::NotifyHandler {
+            peer_id: random.peer_id,
+            handler: NotifyHandler::Any,
+            event: rpc::Rpc {
+              topic: self.topic.clone(),
+              action: Some(rpc::rpc::Action::Shuffle(rpc::Shuffle {
+                origin: origin.clone().into(),
+                nodes: nodes.iter().cloned().map(|n| n.into()).collect(),
+                ttl: ttl - 1,
+              })),
             },
-          );
-        }
+          },
+        );
+      } else {
+        // no active views available to forward the message to,
+        // add the originator to the active view
+        self.add_node_to_active_view(origin.into(), true);
       }
     }
   }
@@ -403,6 +420,10 @@ impl HyParView {
     node: AddressablePeer,
     initiator: bool,
   ) {
+    if node.peer_id == self.local_node.peer_id {
+      return;
+    }
+
     if self.active.insert(node.clone()) {
       debug!("Adding peer to active view: {:?}", node);
       if initiator {
@@ -470,8 +491,9 @@ impl HyParView {
           action: Some(rpc::rpc::Action::Shuffle(rpc::Shuffle {
             ttl: self.config.active_walk_length() as u32,
             origin: self.local_node.clone().into(),
-            active: self
+            nodes: self
               .active()
+              .chain(self.passive.iter())
               .choose_multiple(
                 &mut rand::thread_rng(),
                 self.config.shuffle_max_size(),
@@ -479,16 +501,6 @@ impl HyParView {
               .iter()
               .cloned()
               .map(|a| a.into())
-              .collect(),
-            passive: self
-              .passive()
-              .choose_multiple(
-                &mut rand::thread_rng(),
-                self.config.shuffle_max_size(),
-              )
-              .iter()
-              .cloned()
-              .map(|p| p.into())
               .collect(),
           })),
         },
@@ -500,19 +512,22 @@ impl HyParView {
     origin: AddressablePeer,
     nodes: Vec<AddressablePeer>,
   ) {
-    // first establish a temporary connection with the origin peer
-    // if it is not established already
-    self
-      .out_events
-      .push_back(EpisubNetworkBehaviourAction::Dial {
-        opts: DialOpts::peer_id(origin.peer_id)
-          .addresses(origin.addresses.into_iter().collect())
-          .condition(PeerCondition::Disconnected)
-          .build(),
-        handler: EpisubHandler::new(self.config.max_transmit_size, true),
-      });
+    if !self.is_active(&origin.peer_id) {
+      // first establish a temporary connection with the origin peer
+      // if it is not established already
+      self
+        .out_events
+        .push_back(EpisubNetworkBehaviourAction::Dial {
+          opts: DialOpts::peer_id(origin.peer_id)
+            .addresses(origin.addresses.into_iter().collect())
+            .condition(PeerCondition::Disconnected)
+            .build(),
+          handler: EpisubHandler::new(self.config.max_transmit_size, true),
+        });
+    }
 
-    // then send them a message
+    // then send them a message and the connection will close because
+    // it has KeepAlive=false
     self
       .out_events
       .push_back(EpisubNetworkBehaviourAction::NotifyHandler {
@@ -528,14 +543,12 @@ impl HyParView {
   }
 
   fn maybe_move_random_passive_to_active(&mut self) {
-    while self.starved() {
+    if self.starved() {
       let random = self.passive.iter().choose(&mut rand::thread_rng()).cloned();
       if let Some(random) = random {
         self.passive.remove(&random);
         trace!("removing peer {:?} from passive view", random);
         self.add_node_to_active_view(random, true);
-      } else {
-        break; // we're out of passive nodes..
       }
     }
   }
@@ -557,6 +570,18 @@ impl Future for HyParView {
         self.send_shuffle(random.peer_id);
         self.last_shuffle = Instant::now();
       }
+    }
+
+    // Periodically check if the active view is starved and
+    // promote one of the passive nodes to active.
+    if Instant::now().duration_since(self.last_tick)
+      > self.config.tick_frequency
+    {
+      // if we are blow the desired number of active nodes,
+      // and we have just learned about new passive nodes,
+      // try to topup the active nodes
+      self.maybe_move_random_passive_to_active();
+      self.last_tick = Instant::now();
     }
 
     if let Some(event) = self.out_events.pop_front() {

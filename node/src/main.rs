@@ -176,7 +176,7 @@ async fn main() -> Result<()> {
           _ => trace!("swarm event: {:?}", event),
         }
       },
-      Some(sendmsg) = msg_rx.recv() => {
+      Some(_sendmsg) = msg_rx.recv() => {
         //swarm.behaviour_mut().publish(&opts.topic, sendmsg)?;
       },
     };
