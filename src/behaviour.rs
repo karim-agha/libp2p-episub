@@ -1,10 +1,8 @@
 use crate::{
-  error::FormatError,
-  handler::EpisubHandler,
-  rpc,
-  view::{AddressablePeer, HyParView},
+  error::PublishError, handler::EpisubHandler, rpc, topic::TopicMesh,
+  view::AddressablePeer, config::Config,
 };
-use futures::Future;
+use futures::FutureExt;
 use libp2p::{
   core::{
     connection::{ConnectionId, ListenerId},
@@ -16,64 +14,24 @@ use libp2p::{
     NotifyHandler, PollParameters,
   },
 };
+use rand::Rng;
 use std::{
   collections::{HashMap, HashSet, VecDeque},
+  iter,
   net::{Ipv4Addr, Ipv6Addr},
-  pin::Pin,
   task::{Context, Poll},
-  time::Duration,
 };
 use tracing::{debug, trace, warn};
 
-/// Configuration paramaters for Episub
-#[derive(Debug, Clone)]
-pub struct Config {
-  /// Estimated number of online nodes joining one topic
-  pub network_size: usize,
-
-  /// HyParView Active View constant
-  /// active view size = Ln(N) + C
-  pub active_view_factor: usize,
-
-  /// HyParView Passive View constant
-  /// active view size = C * Ln(N)
-  pub passive_view_factor: usize,
-
-  /// Maximum size of a message, this applies to
-  /// control and payload messages
-  pub max_transmit_size: usize,
-
-  /// The number for ForwardJoin forwards (ttl)
-  pub active_walk_length: usize,
-
-  /// The number of random active + passive
-  /// nodes exchanged in a shuffle operation
-  pub shuffle_max_size: usize,
-
-  /// How often a peer shuffle happens
-  /// with a random active peer
-  pub shuffle_interval: Duration,
-}
-
-impl Default for Config {
-  /// Defaults inspired by the HyParView paper
-  fn default() -> Self {
-    Self {
-      network_size: 10000,
-      active_view_factor: 6,
-      passive_view_factor: 5,
-      active_walk_length: 3,
-      shuffle_max_size: 15,
-      shuffle_interval: Duration::from_secs(60),
-      max_transmit_size: 1_024_000, // 1 MB
-    }
-  }
-}
 
 /// Event that can be emitted by the episub behaviour.
 #[derive(Debug)]
 pub enum EpisubEvent {
-  Message,
+  Message {
+    topic: String,
+    id: u128,
+    payload: Vec<u8>,
+  },
   Subscribed(String),
   Unsubscibed(String),
   ActivePeerAdded(PeerId),
@@ -98,7 +56,7 @@ pub struct Episub {
   local_node: Option<AddressablePeer>,
 
   /// Per-topic node membership
-  topics: HashMap<String, HyParView>,
+  topics: HashMap<String, TopicMesh>,
 
   /// A list of peers that have violated the protocol
   /// and are pemanently banned from this node. All their
@@ -187,7 +145,7 @@ impl Episub {
       if let Some(ref node) = self.local_node {
         self.topics.insert(
           topic.clone(),
-          HyParView::new(topic.clone(), self.config.clone(), node.clone()),
+          TopicMesh::new(topic.clone(), self.config.clone(), node.clone()),
         );
         self
           .out_events
@@ -216,11 +174,11 @@ impl Episub {
     } else {
       debug!("unsubscribing from topic: {}", topic);
       self.pending_topics.remove(&topic);
-      if let Some(view) = self.topics.remove(&topic) {
-        for peer in view.all_peers_id() {
+      if let Some(mesh) = self.topics.remove(&topic) {
+        for peer in mesh.nodes().active().map(|ap| ap.peer_id) {
           trace!("disconnecting from peer {} on topic {}", peer, topic);
           self.send_message(
-            *peer,
+            peer.clone(),
             rpc::Rpc {
               topic: topic.clone(),
               action: Some(rpc::rpc::Action::Disconnect(rpc::Disconnect {
@@ -240,6 +198,20 @@ impl Episub {
       true
     }
   }
+
+  pub fn publish(
+    &mut self,
+    topic: &str,
+    message: Vec<u8>,
+  ) -> Result<u128, PublishError> {
+    if let Some(topic) = self.topics.get_mut(topic) {
+      let id = rand::thread_rng().gen();
+      topic.publish(id, message);
+      Ok(id)
+    } else {
+      Err(PublishError::TopicNotSubscribed)
+    }
+  }
 }
 
 impl NetworkBehaviour for Episub {
@@ -247,25 +219,29 @@ impl NetworkBehaviour for Episub {
   type OutEvent = EpisubEvent;
 
   fn new_handler(&mut self) -> Self::ProtocolsHandler {
-    EpisubHandler::new(self.config.max_transmit_size)
+    EpisubHandler::new(self.config.max_transmit_size, false)
   }
 
   fn inject_connection_established(
     &mut self,
     peer_id: &PeerId,
-    _connection_id: &ConnectionId,
+    connection: &ConnectionId,
     endpoint: &ConnectedPoint,
     _failed_addresses: Option<&Vec<Multiaddr>>,
   ) {
+    if self.banned_peers.contains(peer_id) {
+      self.force_disconnect(*peer_id, *connection);
+      debug!(
+        "Rejected connection from banned peer {} on endpoint {:?}",
+        peer_id, endpoint
+      );
+      return;
+    }
+
     debug!(
       "Connection to peer {} established on endpoint {:?}",
       peer_id, endpoint
     );
-
-    if self.banned_peers.contains(peer_id) {
-      self.force_disconnect(*peer_id);
-      return;
-    }
 
     // preserve a mapping from peer id to the address that was
     // used to establish the connection.
@@ -316,15 +292,15 @@ impl NetworkBehaviour for Episub {
   fn inject_dial_failure(
     &mut self,
     peer_id: Option<PeerId>,
-    _handler: Self::ProtocolsHandler,
+    _: Self::ProtocolsHandler,
     error: &DialError,
   ) {
     if !matches!(error, DialError::DialPeerConditionFalse(_)) {
       if let Some(peer_id) = peer_id {
         debug!("Dialing peer {} failed: {:?}", peer_id, error);
-        for (_, view) in self.topics.iter_mut() {
+        for (_, mesh) in self.topics.iter_mut() {
           // remove from active and passive
-          view.disconnect(peer_id, false);
+          mesh.disconnected(peer_id, false);
         }
       }
     }
@@ -342,12 +318,15 @@ impl NetworkBehaviour for Episub {
       peer_id, endpoint
     );
 
-    for (_, view) in self.topics.iter_mut() {
+    for (_, mesh) in self.topics.iter_mut() {
       // remove from active keep in passive
-      view.disconnect(*peer_id, true);
+      mesh.disconnected(*peer_id, true);
     }
   }
 
+  /// Invoked on every message from the protocol for active connections with peers.
+  /// Does basic validation only and forwards those calls to their appropriate handlers
+  /// in HyParView or MessageGraph
   fn inject_event(
     &mut self,
     peer_id: PeerId,
@@ -359,7 +338,7 @@ impl NetworkBehaviour for Episub {
         "rejecting event from a banned peer {}: {:?}",
         peer_id, event
       );
-      self.force_disconnect(peer_id);
+      self.force_disconnect(peer_id, connection);
       return;
     }
 
@@ -371,79 +350,25 @@ impl NetworkBehaviour for Episub {
     );
 
     if event.action.is_none() {
-      self.ban_peer(peer_id); // peer is violating the protocol
+      self.ban_peer(peer_id, connection); // peer is violating the protocol
       return;
     }
 
-    if let Some(view) = self.topics.get_mut(&event.topic) {
-      // handle rpc call on an established topic.
-      use rpc::rpc::Action;
-      match event.action.unwrap() {
-        Action::Join(rpc::Join { ttl, peer }) => {
-          if let Ok(peer) = peer.try_into() {
-            view.join(peer, ttl);
-          } else {
-            warn!("malformed join request");
-            self.ban_peer(peer_id);
-          }
-        }
-        Action::JoinAccepted(rpc::JoinAccepted { .. }) => {
-          debug!(
-            "We got added to active view for peer {} on topic {}",
-            peer_id, event.topic
-          );
-        }
-        Action::ForwardJoin(rpc::ForwardJoin { ttl, peer }) => {
-          if let Some(local) = self.local_node.as_ref() {
-            match peer.try_into() {
-              Ok(peer) => {
-                view.forward_join(peer, ttl as usize, local.peer_id, peer_id)
-              }
-              Err(err) => {
-                warn!("protocol violation: {:?}", err);
-                self.ban_peer(peer_id);
-              }
-            }
-          }
-        }
-        Action::Neighbor(rpc::Neighbor { priority, peer }) => {
-          let peer: Result<AddressablePeer, FormatError> = peer.try_into();
-          match peer {
-            Ok(peer) => {
-              if peer.peer_id == peer_id {
-                view.neighbor(peer, priority);
-              } else {
-                warn!("peer {} is impersonating {}", peer_id, peer.peer_id);
-                self.ban_peer(peer_id);
-              }
-            }
-            Err(err) => {
-              warn!("protocol violation: {:?}", err);
-              self.ban_peer(peer_id);
-            }
-          }
-        }
-        Action::Disconnect(rpc::Disconnect { alive }) => {
-          view.disconnect(peer_id, alive);
-        }
-        Action::Shuffle(params) => match params.origin.clone().try_into() {
-          Ok(origin) => view.shuffle(peer_id, params, origin),
-          Err(err) => {
-            warn!("protocol violation: {:?}", err);
-            self.ban_peer(peer_id);
-          }
-        },
-        Action::ShuffleReply(params) => {
-          view.shuffle_reply(peer_id, params);
-        }
-        Action::Message(rpc::Message { payload }) => {
-          view.message(peer_id, payload);
-        }
+    if let Some(mesh) = self.topics.get_mut(&event.topic) {
+      // handle rpc call on an established topic, if the RPC message has
+      // a syntax error or is unparsable at the protocol level, then ban
+      // the sender from this node. This might indicate a malicious node
+      // or an incompatible version of the protocol.
+      if let Err(error) = mesh.inject_rpc_call(peer_id, event) {
+        warn!("Protocol violation: {}", error);
+        self.ban_peer(peer_id, connection);
       }
     } else {
       // reject any messages on a topic that we're not subscribed to
       // by immediately sending a disconnect event with alive: false,
-      // then closing connection to the peer.
+      // then closing connection to the peer. That will also remove
+      // this node from the requesting peer's passive view, so we won't
+      // be bothered again by this peer for this topic.
       self
         .out_events
         .push_back(EpisubNetworkBehaviourAction::NotifyHandler {
@@ -456,7 +381,7 @@ impl NetworkBehaviour for Episub {
             })),
           },
         });
-      self.force_disconnect(peer_id);
+      self.force_disconnect(peer_id, connection);
     }
   }
 
@@ -476,9 +401,8 @@ impl NetworkBehaviour for Episub {
     // next bubble up events for all topics
     // todo, randomize polling among topics, otherwise
     // some topics might be starved by more active ones
-    for view in self.topics.values_mut() {
-      let pinned = Pin::new(view);
-      if let Poll::Ready(event) = pinned.poll(cx) {
+    for mesh in self.topics.values_mut() {
+      if let Poll::Ready(event) = mesh.poll_unpin(cx) {
         return Poll::Ready(event);
       }
     }
@@ -514,7 +438,7 @@ impl Episub {
           if !self.topics.contains_key(&topic) {
             self.topics.insert(
               topic.clone(),
-              HyParView::new(
+              TopicMesh::new(
                 topic.clone(),
                 self.config.clone(),
                 self.local_node.as_ref().unwrap().clone(),
@@ -541,45 +465,37 @@ impl Episub {
     }
   }
 
-  fn ban_peer(&mut self, peer: PeerId) {
+  fn ban_peer(&mut self, peer: PeerId, connection: ConnectionId) {
     warn!("Banning peer {}", peer);
     self.peer_addresses.remove(&peer);
     self.banned_peers.insert(peer);
-    self.force_disconnect(peer);
+    self.force_disconnect(peer, connection);
   }
 
-  fn force_disconnect(&mut self, peer: PeerId) {
+  fn force_disconnect(&mut self, peer: PeerId, connection: ConnectionId) {
     self
       .out_events
       .push_back(EpisubNetworkBehaviourAction::CloseConnection {
         peer_id: peer,
-        connection: CloseConnection::All,
+        connection: CloseConnection::One(connection),
       });
   }
 
   fn request_join_for_starving_topics(&mut self, peer: PeerId) {
     // for each topic that has zero active nodes,
     // send a join request to any dialer
-    let starved_topics: Vec<String> = self
+    self
       .topics
-      .iter()
-      .filter(|(_, v)| v.is_starved())
-      .map(|(k, _)| k)
-      .cloned()
-      .collect();
-
-    for topic in starved_topics.iter() {
-      self.send_message(
-        peer,
-        rpc::Rpc {
-          topic: topic.clone(),
-          action: Some(rpc::rpc::Action::Join(rpc::Join {
-            ttl: self.config.active_walk_length as u32,
-            peer: self.local_node.as_ref().unwrap().clone().into(),
-          })),
-        },
-      );
-    }
+      .iter_mut()
+      .filter(|(_, v)| v.nodes().starved() && !v.nodes().is_active(&peer))
+      .for_each(|(_, v)| {
+        v.initiate_join(AddressablePeer {
+          peer_id: peer,
+          addresses: iter::once(self.peer_addresses.get(&peer).unwrap())
+            .cloned()
+            .collect(),
+        })
+      });
   }
 }
 

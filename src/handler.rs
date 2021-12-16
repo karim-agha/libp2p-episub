@@ -15,6 +15,7 @@ use std::{
   io,
   pin::Pin,
   task::{Context, Poll},
+  time::{Duration, Instant},
 };
 use tracing::{error, warn};
 
@@ -67,13 +68,18 @@ type EpisubHandlerEvent = ProtocolsHandlerEvent<
 >;
 
 impl EpisubHandler {
-  pub fn new(max_transmit_size: usize) -> Self {
+  // temporary: used only for shuffle reply, then the connection is only
+  // open temporarily for 10 seconds and closed
+  pub fn new(max_transmit_size: usize, temporary: bool) -> Self {
     Self {
       listen_protocol: SubstreamProtocol::new(
         EpisubProtocol::new(max_transmit_size),
         (),
       ),
-      keep_alive: KeepAlive::Yes,
+      keep_alive: match temporary {
+        false => KeepAlive::Yes,
+        true => KeepAlive::Until(Instant::now() + Duration::from_secs(10)),
+      },
       outbound_substream: None,
       inbound_substream: None,
       outbound_queue: VecDeque::new(),
@@ -117,7 +123,21 @@ impl ProtocolsHandler for EpisubHandler {
   }
 
   fn inject_event(&mut self, event: Self::InEvent) {
-    self.outbound_queue.push_back(event);
+    if self.keep_alive != KeepAlive::Yes {
+      // temporary connection are only for
+      // shuffle replies. Don't permit any
+      // outgoing message other than shuffle
+      // reply
+      if let rpc::Rpc {
+        action: Some(rpc::rpc::Action::ShuffleReply(_)),
+        ..
+      } = event
+      {
+        self.outbound_queue.push_back(event);
+      }
+    } else {
+      self.outbound_queue.push_back(event);
+    }
   }
 
   fn inject_dial_upgrade_error(

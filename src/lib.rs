@@ -45,16 +45,22 @@
 //! }
 //! ```
 
-
 mod rpc {
   include!(concat!(env!("OUT_DIR"), "/rpc.pb.rs"));
 }
 
 mod behaviour;
+mod cache;
 mod codec;
 mod error;
 mod handler;
 mod protocol;
+mod topic;
+mod tree;
 mod view;
+mod config;
 
-pub use behaviour::{Config, Episub, EpisubEvent};
+pub use {
+  config::Config,
+  behaviour::{Episub, EpisubEvent}
+};

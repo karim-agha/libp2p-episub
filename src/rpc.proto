@@ -12,6 +12,7 @@ message AddressablePeer {
 message Rpc {
 	required string topic = 1;
 	oneof Action {
+		// hyparview
 		Join join = 2;
 		JoinAccepted joinAccepted = 3;
 		ForwardJoin forwardJoin = 4;
@@ -19,7 +20,12 @@ message Rpc {
 		Shuffle shuffle = 6;
 		ShuffleReply shuffleReply = 7;
 		Disconnect disconnect = 8;
+		
+		// plumtree
 		Message message = 9;
+		IHave ihave = 10;
+		Prune prune = 11;
+		Graft graft = 12;
 	}
 }
 
@@ -63,5 +69,22 @@ message Disconnect {
 }
 
 message Message {
-	required bytes payload = 1;
+	required bytes id = 1;
+	required uint32 hop = 2;
+	required bytes payload = 3;
+}
+
+message IHave {
+	message MessageRecord {
+		required uint32 hop = 1;
+		required bytes id = 2;
+	}
+
+	repeated MessageRecord ihaves = 1;
+}
+
+message Prune {}
+
+message Graft {
+	repeated bytes ids = 2;
 }

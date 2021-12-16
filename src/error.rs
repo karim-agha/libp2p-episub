@@ -1,4 +1,4 @@
-use libp2p::{multiaddr, multihash};
+use libp2p::{multiaddr, multihash, PeerId};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -11,17 +11,27 @@ pub enum EpisubHandlerError {
   Io(#[from] std::io::Error),
 }
 
-#[derive(Debug, Error)]
-pub enum SubscriptionError {
-  #[error("Couldn't publish our subscription: {0}")]
-  PublishError(#[from] PublishError),
-}
-
 /// Error associated with publishing a gossipsub message.
 #[derive(Debug, Error)]
 pub enum PublishError {
-  #[error("The compression algorithm failed: {0}")]
-  TransformFailed(#[from] std::io::Error),
+  #[error("Attempt to send a message on an unsubscribed topic")]
+  TopicNotSubscribed,
+
+  #[error("Exceeded maximum transmission size.")]
+  MaxTransmissionSize,
+}
+
+/// Errors associated with RPC calls between active nodes
+#[derive(Debug, Error)]
+pub enum RpcError {
+  #[error("Peer Id is malformed")]
+  InvalidPeerId,
+
+  #[error("Peer {0} is impersonating {1}")]
+  ImpersonatedPeer(PeerId, PeerId),
+
+  #[error("Expected a 16-byte u128")]
+  InvalidMessageId
 }
 
 /// Errors associated with converting values from

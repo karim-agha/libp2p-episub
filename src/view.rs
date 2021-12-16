@@ -1,9 +1,9 @@
-//! [HyParView]: a membership protocol for reliable gossip-based broadcast
-//! [HyParView]: http://asc.di.fct.unl.pt/~jleitao/pdf/dsn07-leitao.pdf
+//! HyParView: a membership protocol for reliable gossip-based broadcast
+//! Leitão, João & Pereira, José & Rodrigues, Luís. (2007). 419-429. 10.1109/DSN.2007.56.
 
 use crate::{
-  behaviour::EpisubNetworkBehaviourAction, error::FormatError,
-  handler::EpisubHandler, rpc, Config, EpisubEvent,
+  behaviour::EpisubNetworkBehaviourAction, config::Config, error::FormatError,
+  handler::EpisubHandler, rpc, EpisubEvent,
 };
 use futures::Future;
 use libp2p::{
@@ -58,7 +58,7 @@ pub struct HyParView {
   out_events: VecDeque<EpisubNetworkBehaviourAction>,
 }
 
-/// Public view functions
+/// Public methods
 impl HyParView {
   pub fn new(topic: String, config: Config, local: AddressablePeer) -> Self {
     Self {
@@ -91,39 +91,32 @@ impl HyParView {
     self.passive.iter()
   }
 
-  pub fn all_peers_id(&self) -> impl Iterator<Item = &PeerId> {
-    self
-      .active()
-      .map(|ap| &ap.peer_id)
-      .chain(self.passive().map(|p| &p.peer_id))
+  /// Checks if a peer is already in the active view of this topic.
+  /// This is used to check if we need to send JOIN message when
+  /// the peer is dialed, peers that are active will not get
+  /// a JOIN request, otherwise the network will go into endless
+  /// join/forward churn.
+  pub fn is_active(&self, peer: &PeerId) -> bool {
+    self.active.contains(&AddressablePeer {
+      peer_id: *peer,
+      addresses: HashSet::new(),
+    })
   }
 
   /// Starved topics are ones where the active view
   /// doesn't have a full set of nodes in it.
-  pub fn is_starved(&self) -> bool {
-    self.active.len() < self.max_active_view_size()
+  pub fn starved(&self) -> bool {
+    self.active.len() < self.config.max_active_view_size()
   }
 }
 
 impl HyParView {
-  fn max_active_view_size(&self) -> usize {
-    ((self.config.network_size as f64).log2()
-      + self.config.active_view_factor as f64)
-      .round() as usize
-  }
-
-  fn max_passive_view_size(&self) -> usize {
-    ((self.config.network_size as f64).log2()
-      * self.config.passive_view_factor as f64)
-      .round() as usize
-  }
-
   /// This is invoked when a node sends us a JOIN request,
   /// it will see if the active view is full, and if so, removes
   /// a random node from the active view and makes space for the new
   /// node.
   fn free_up_active_slot(&mut self) {
-    if self.active.len() >= self.max_active_view_size() {
+    if self.starved() {
       let random = self.passive.iter().choose(&mut rand::thread_rng()).cloned();
       if let Some(random) = random {
         debug!(
@@ -156,41 +149,58 @@ impl HyParView {
 
 /// public handlers of HyParView protocol control messages
 impl HyParView {
-  pub fn join(&mut self, peer: AddressablePeer, ttl: u32) {
+  pub fn initiate_join(&mut self, peer: AddressablePeer) {
+    self
+      .out_events
+      .push_back(EpisubNetworkBehaviourAction::NotifyHandler {
+        peer_id: peer.peer_id,
+        handler: NotifyHandler::Any,
+        event: rpc::Rpc {
+          topic: self.topic.clone(),
+          action: Some(rpc::rpc::Action::Join(rpc::Join {
+            ttl: self.config.active_walk_length() as u32,
+            peer: self.local_node.clone().into(),
+          })),
+        },
+      });
+  }
+
+  pub fn inject_join(&mut self, peer: AddressablePeer, ttl: u32) {
     if self.active.contains(&peer) {
       return;
     }
 
-    // if we're full, free up a slot and move a node to passive.
-    // JOIN is a high-priority request, that introduces a node
-    // to the cluster and must be handled with priority.
-    self.free_up_active_slot();
+    if self.starved() {
+      // notify the peer that we have accepted their join request, so
+      // it can add us to its active view, and in case it is the first
+      // join request on a pending topic, it moves to the fully joined
+      // state
+      self.add_node_to_active_view(peer.clone(), true);
+    } else {
+      self.add_node_to_passive_view(peer.clone());
+    }
 
     // the send a forward-join to all members of our current active view
     for active_peer in self.active.iter().collect::<Vec<_>>() {
-      self
-        .out_events
-        .push_back(EpisubNetworkBehaviourAction::NotifyHandler {
-          peer_id: active_peer.peer_id,
-          handler: NotifyHandler::Any,
-          event: rpc::Rpc {
-            topic: self.topic.clone(),
-            action: Some(rpc::rpc::Action::ForwardJoin(rpc::ForwardJoin {
-              peer: peer.clone().into(),
-              ttl,
-            })),
+      if active_peer.peer_id != peer.peer_id {
+        self.out_events.push_back(
+          EpisubNetworkBehaviourAction::NotifyHandler {
+            peer_id: active_peer.peer_id,
+            handler: NotifyHandler::Any,
+            event: rpc::Rpc {
+              topic: self.topic.clone(),
+              action: Some(rpc::rpc::Action::ForwardJoin(rpc::ForwardJoin {
+                peer: peer.clone().into(),
+                ttl,
+              })),
+            },
           },
-        });
+        );
+      }
     }
-
-    // notify the peer that we have accepted their join request, so
-    // it can add us to its active view, and in case it is the first
-    // join request on a pending topic, it moves to the fully joined
-    // state
-    self.add_node_to_active_view(peer, true);
   }
 
-  pub fn forward_join(
+  pub fn inject_forward_join(
     &mut self,
     peer: AddressablePeer,
     ttl: usize,
@@ -203,37 +213,40 @@ impl HyParView {
     }
 
     if ttl == 0 {
-      return;
+      // if we're full, free up a slot and move a node to passive.
+      self.free_up_active_slot();
     }
 
-    if self.active.len() < self.max_active_view_size() {
+    if self.starved() {
       self.add_node_to_active_view(peer.clone(), true);
     } else {
       self.add_node_to_passive_view(peer.clone());
     }
 
-    for n in &self.active {
-      if n.peer_id == sender || n.peer_id == peer.peer_id {
-        continue;
-      }
-      self
-        .out_events
-        .push_back(EpisubNetworkBehaviourAction::NotifyHandler {
-          peer_id: n.peer_id,
-          handler: NotifyHandler::Any,
-          event: rpc::Rpc {
-            topic: self.topic.clone(),
-            action: Some(rpc::rpc::Action::ForwardJoin(rpc::ForwardJoin {
-              peer: peer.clone().into(),
-              ttl: (ttl - 1) as u32,
-            })),
+    if ttl != 0 {
+      for n in &self.active {
+        if n.peer_id == sender || n.peer_id == peer.peer_id {
+          continue;
+        }
+        self.out_events.push_back(
+          EpisubNetworkBehaviourAction::NotifyHandler {
+            peer_id: n.peer_id,
+            handler: NotifyHandler::Any,
+            event: rpc::Rpc {
+              topic: self.topic.clone(),
+              action: Some(rpc::rpc::Action::ForwardJoin(rpc::ForwardJoin {
+                peer: peer.clone().into(),
+                ttl: (ttl - 1) as u32,
+              })),
+            },
           },
-        });
+        );
+      }
     }
   }
 
-  pub fn neighbor(&mut self, peer: AddressablePeer, priority: i32) {
-    if self.active.len() < self.max_active_view_size() {
+  pub fn inject_neighbor(&mut self, peer: AddressablePeer, priority: i32) {
+    if self.starved() {
       self.add_node_to_active_view(peer, false);
     } else {
       // high priority NEIGHBOR messages are sent by nodes
@@ -247,7 +260,7 @@ impl HyParView {
         // This is a low-priority neighbor request and we are
         // at capacity for active peers, send back a disconnect
         // message and place the peer in passive view.
-        self.disconnect(peer.peer_id, true);
+        self.inject_disconnect(peer.peer_id, true);
       }
     }
   }
@@ -258,7 +271,7 @@ impl HyParView {
   ///
   /// Also invoked by the behaviour when a connection with a peer is dropped.
   /// This ensures that dropped connections on not remain in the active view.
-  pub fn disconnect(&mut self, peer: PeerId, alive: bool) {
+  pub fn inject_disconnect(&mut self, peer: PeerId, alive: bool) {
     debug!("disconnecting peer {}, from passive: {}", peer, !alive);
     if alive {
       // because both references to self are mut,
@@ -296,7 +309,7 @@ impl HyParView {
   /// and then drop random nodes that are over the max limit of the
   /// passive view size. This way we refresh our passive view with
   /// nodes that we didn't contact directly, but our neighbors did.
-  pub fn shuffle(
+  pub fn inject_shuffle(
     &mut self,
     from: PeerId,
     mut params: rpc::Shuffle,
@@ -321,7 +334,7 @@ impl HyParView {
         .collect::<HashSet<_>>()
         .difference(&deduped_passive)
         .cloned()
-        .choose_multiple(&mut rand::thread_rng(), self.config.shuffle_max_size),
+        .choose_multiple(&mut rand::thread_rng(), self.config.shuffle_max_size()),
     );
 
     // this is the unique list of peers that the remote node knows about
@@ -366,7 +379,7 @@ impl HyParView {
     }
   }
 
-  pub fn shuffle_reply(&mut self, peer: PeerId, params: rpc::ShuffleReply) {
+  pub fn inject_shuffle_reply(&mut self, params: rpc::ShuffleReply) {
     let nodes = params
       .nodes
       .into_iter()
@@ -378,24 +391,9 @@ impl HyParView {
 
     // and remove any excess nodes that put us
     // above the maximum passive view size.
-    while self.passive.len() > self.max_passive_view_size() {
+    while self.passive.len() > self.config.max_passive_view_size() {
       self.passive.drain().next();
     }
-
-    // then optionally disconnect from this peer if it
-    // is not in the active peer list.
-    if !self.active.iter().any(|p| p.peer_id == peer) {
-      self.out_events.push_back(
-        EpisubNetworkBehaviourAction::CloseConnection {
-          peer_id: peer,
-          connection: libp2p::swarm::CloseConnection::All,
-        },
-      );
-    }
-  }
-
-  pub fn message(&mut self, _peer: PeerId, _data: Vec<u8>) {
-    debug!("hyparview: message");
   }
 }
 
@@ -415,7 +413,7 @@ impl HyParView {
               .addresses(node.addresses.into_iter().collect())
               .condition(PeerCondition::Disconnected)
               .build(),
-            handler: EpisubHandler::new(self.config.max_transmit_size),
+            handler: EpisubHandler::new(self.config.max_transmit_size, false),
           });
 
         self.out_events.push_back(
@@ -448,7 +446,7 @@ impl HyParView {
     if node.peer_id != self.local_node.peer_id {
       trace!("Adding peer to passive view: {:?}", node);
       self.passive.insert(node);
-      if self.passive.len() > self.max_passive_view_size() {
+      if self.passive.len() > self.config.max_passive_view_size() {
         if let Some(random) =
           self.passive().choose(&mut rand::thread_rng()).cloned()
         {
@@ -470,13 +468,13 @@ impl HyParView {
         event: rpc::Rpc {
           topic: self.topic.clone(),
           action: Some(rpc::rpc::Action::Shuffle(rpc::Shuffle {
-            ttl: self.config.active_walk_length as u32,
+            ttl: self.config.active_walk_length() as u32,
             origin: self.local_node.clone().into(),
             active: self
               .active()
               .choose_multiple(
                 &mut rand::thread_rng(),
-                self.config.shuffle_max_size,
+                self.config.shuffle_max_size(),
               )
               .iter()
               .cloned()
@@ -486,7 +484,7 @@ impl HyParView {
               .passive()
               .choose_multiple(
                 &mut rand::thread_rng(),
-                self.config.shuffle_max_size,
+                self.config.shuffle_max_size(),
               )
               .iter()
               .cloned()
@@ -511,7 +509,7 @@ impl HyParView {
           .addresses(origin.addresses.into_iter().collect())
           .condition(PeerCondition::Disconnected)
           .build(),
-        handler: EpisubHandler::new(self.config.max_transmit_size),
+        handler: EpisubHandler::new(self.config.max_transmit_size, true),
       });
 
     // then send them a message
@@ -530,7 +528,7 @@ impl HyParView {
   }
 
   fn maybe_move_random_passive_to_active(&mut self) {
-    while self.active.len() < self.max_active_view_size() {
+    while self.starved() {
       let random = self.passive.iter().choose(&mut rand::thread_rng()).cloned();
       if let Some(random) = random {
         self.passive.remove(&random);

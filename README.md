@@ -1,4 +1,4 @@
-# Libp2p-Brisa: Proximity Aware Epidemic PubSub for libp2p
+# Libp2p-episub: Proximity Aware Epidemic PubSub for libp2p
 
 This Rust library implements a `libp2p` behaviour for efficient large-scale pub/sub protocol based on ideas in the [BRISA](https://citeseerx.ist.psu.edu/viewdoc/summary?doi=10.1.1.360.1724) paper.
 

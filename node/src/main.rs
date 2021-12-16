@@ -111,7 +111,7 @@ async fn main() -> Result<()> {
     .unwrap();
 
   // subscribe to the topic specified on the command line
-  swarm.behaviour_mut().subscribe(opts.topic);
+  swarm.behaviour_mut().subscribe(opts.topic.clone());
 
   // dial all bootstrap nodes
   opts
@@ -137,7 +137,6 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|err| {
           error!("periodic message thread error: {:?}", err);
         })
-      //info!("Broadcasted message from local peer");
     }
   });
 
@@ -177,8 +176,8 @@ async fn main() -> Result<()> {
           _ => trace!("swarm event: {:?}", event),
         }
       },
-      Some(_sendmsg) = msg_rx.recv() => {
-        //info!("placeholder for publishing message with content: {:?}", sendmsg);
+      Some(sendmsg) = msg_rx.recv() => {
+        //swarm.behaviour_mut().publish(&opts.topic, sendmsg)?;
       },
     };
   }

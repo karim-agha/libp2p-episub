@@ -17,7 +17,7 @@ use tower_http::{
   services::ServeDir,
   trace::{DefaultMakeSpan, TraceLayer},
 };
-use tracing::{error, info, Level};
+use tracing::{error, info, trace, Level};
 
 async fn start_ev_listener(publisher: watch::Sender<NodeUpdate>) -> Result<()> {
   let addr = SocketAddr::from(([0, 0, 0, 0], 9000));
@@ -28,9 +28,11 @@ async fn start_ev_listener(publisher: watch::Sender<NodeUpdate>) -> Result<()> {
   loop {
     let (addr, len) = socket.recv_from(&mut buffer).await?;
     let update: NodeUpdate = unsafe { transmute(buffer) };
-    info!(
+    trace!(
       "Received Node update from ({} | {}): {:?}",
-      addr, len, update
+      addr,
+      len,
+      update
     );
     publisher.send(update)?;
   }
@@ -91,7 +93,7 @@ async fn ws_handler(
     loop {
       while let Ok(_) = subscriber.changed().await {
         let val = subscriber.borrow().clone();
-        info!("websocket stream value changed: {:?}", val);
+        trace!("websocket stream value changed: {:?}", val);
 
         #[allow(unaligned_references)]
         if let Err(err) = socket
