@@ -381,8 +381,8 @@ impl HyParView {
             event: rpc::Rpc {
               topic: self.topic.clone(),
               action: Some(rpc::rpc::Action::Shuffle(rpc::Shuffle {
-                origin: origin.clone().into(),
-                nodes: nodes.iter().cloned().map(|n| n.into()).collect(),
+                origin: origin.into(),
+                nodes: nodes.into_iter().map(|n| n.into()).collect(),
                 ttl: ttl - 1,
               })),
             },
@@ -391,7 +391,7 @@ impl HyParView {
       } else {
         // no active views available to forward the message to,
         // add the originator to the active view
-        self.add_node_to_active_view(origin.into(), true);
+        self.add_node_to_active_view(origin, true);
       }
     }
   }

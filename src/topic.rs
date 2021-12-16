@@ -134,7 +134,7 @@ impl TopicMesh {
         if let Ok(id) = id[0..16].try_into() {
           self
             .tree
-            .broadcast(peer_id, u128::from_le_bytes(id), hop, payload);
+            .inject_message(peer_id, u128::from_le_bytes(id), hop, payload);
         } else {
           return Err(RpcError::InvalidMessageId);
         }

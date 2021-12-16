@@ -45,6 +45,9 @@ struct CliOptions {
 
   #[structopt(long, default_value = "100", about = "p2p audit node")]
   size: usize,
+
+  #[structopt(long, about = "if this node publishes messages")]
+  sender: bool,
 }
 
 async fn send_update(addr: &str, update: NodeUpdate) -> Result<()> {
@@ -53,7 +56,7 @@ async fn send_update(addr: &str, update: NodeUpdate) -> Result<()> {
   audit_sock.connect(addr).await?;
   audit_sock.send(&buf).await.unwrap_or_else(|err| {
     error!("failed to update audit node: {:?}", err);
-    return 0;
+    0
   });
   Ok(())
 }
@@ -121,10 +124,10 @@ async fn main() -> Result<()> {
 
   let (msg_tx, mut msg_rx) = unbounded_channel::<Vec<u8>>();
   tokio::spawn(async move {
-    let local_peer_id = local_peer_id.clone();
+    let local_peer_id = local_peer_id;
     loop {
       // every 5 seconds send a message to the gossip topic
-      tokio::time::sleep(Duration::from_secs(5)).await;
+      tokio::time::sleep(Duration::from_secs(15)).await;
       msg_tx
         .send(
           format!(
@@ -148,6 +151,11 @@ async fn main() -> Result<()> {
           SwarmEvent::Behaviour(b) => {
             info!("swarm behaviour: {:?}", b);
             match b {
+              EpisubEvent::Message{ topic, id, payload } => {
+              info!(
+                "received message {} on topic {} with payload of {} bytes",
+                id, topic, payload.len());
+              }
               EpisubEvent::ActivePeerAdded(p) => {
                 send_update(
                   &opts.audit,
@@ -176,8 +184,10 @@ async fn main() -> Result<()> {
           _ => trace!("swarm event: {:?}", event),
         }
       },
-      Some(_sendmsg) = msg_rx.recv() => {
-        //swarm.behaviour_mut().publish(&opts.topic, sendmsg)?;
+      Some(sendmsg) = msg_rx.recv() => {
+        if opts.sender {
+          swarm.behaviour_mut().publish(&opts.topic, sendmsg)?;
+        }
       },
     };
   }

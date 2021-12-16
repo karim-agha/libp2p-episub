@@ -22,7 +22,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    command: ./episub-node --topic t0 --audit 172.28.1.1:9000 -v --size 100
+    command: ./episub-node --topic t0 --audit 172.28.1.1:9000 -v --size 100 --sender
     environment:
       - RUST_BACKTRACE=1
     depends_on:

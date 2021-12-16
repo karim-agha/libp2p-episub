@@ -1,6 +1,6 @@
 use crate::{
-  error::PublishError, handler::EpisubHandler, rpc, topic::TopicMesh,
-  view::AddressablePeer, config::Config,
+  config::Config, error::PublishError, handler::EpisubHandler, rpc,
+  topic::TopicMesh, view::AddressablePeer,
 };
 use futures::FutureExt;
 use libp2p::{
@@ -22,7 +22,6 @@ use std::{
   task::{Context, Poll},
 };
 use tracing::{debug, trace, warn};
-
 
 /// Event that can be emitted by the episub behaviour.
 #[derive(Debug)]
@@ -178,7 +177,7 @@ impl Episub {
         for peer in mesh.nodes().active().map(|ap| ap.peer_id) {
           trace!("disconnecting from peer {} on topic {}", peer, topic);
           self.send_message(
-            peer.clone(),
+            peer,
             rpc::Rpc {
               topic: topic.clone(),
               action: Some(rpc::rpc::Action::Disconnect(rpc::Disconnect {

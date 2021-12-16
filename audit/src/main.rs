@@ -91,8 +91,8 @@ async fn ws_handler(
     info!("handling websocket request");
     let mut subscriber = subscriber.clone();
     loop {
-      while let Ok(_) = subscriber.changed().await {
-        let val = subscriber.borrow().clone();
+      while subscriber.changed().await.is_ok() {
+        let val = *subscriber.borrow();
         trace!("websocket stream value changed: {:?}", val);
 
         #[allow(unaligned_references)]

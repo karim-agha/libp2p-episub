@@ -33,6 +33,11 @@ pub struct Config {
   /// How often we send out IHaves and check for missing
   /// messages that other peers know about.
   pub tick_frequency: Duration,
+
+  /// The difference in hops between observed IHAVEs and received
+  /// messages that triggers tree optimization and replacing the
+  /// eager node
+  pub hop_optimization_factor: usize,
 }
 
 impl Config {
@@ -66,7 +71,8 @@ impl Default for Config {
       shuffle_interval: Duration::from_secs(30),
       lazy_push_interval: Duration::from_secs(2),
       history_window: Duration::from_secs(30),
-      tick_frequency: Duration::from_millis(100),
+      tick_frequency: Duration::from_millis(200),
+      hop_optimization_factor: 4,
     }
   }
 }

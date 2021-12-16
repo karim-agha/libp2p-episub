@@ -3,19 +3,19 @@
 //! 301-310. 10.1109/SRDS.2007.27.
 
 use libp2p::{swarm::NotifyHandler, PeerId};
-use tracing::{debug, error, info};
+use tracing::{debug, error, warn};
 
 use crate::{
   behaviour::EpisubNetworkBehaviourAction,
-  cache::{ExpiringCache, MessageInfo, MessageRecord},
+  cache::{ExpiringCache, Keyed, MessageInfo, MessageRecord},
   rpc, Config, EpisubEvent,
 };
 use std::{
-  collections::{HashSet, VecDeque},
+  collections::{hash_map::Entry, HashMap, HashSet, VecDeque},
   future::Future,
   pin::Pin,
   task::{Context, Poll},
-  time::{Duration, Instant},
+  time::Instant,
 };
 
 pub struct PlumTree {
@@ -24,7 +24,7 @@ pub struct PlumTree {
   lazy: HashSet<PeerId>,
   eager: HashSet<PeerId>,
   last_tick: Instant,
-  tick_frequency: Duration,
+  config: Config,
   observed: ExpiringCache<MessageInfo>,
   received: ExpiringCache<MessageRecord>,
   out_events: VecDeque<EpisubNetworkBehaviourAction>,
@@ -34,19 +34,13 @@ impl PlumTree {
   pub fn new(topic: String, config: Config, local_node: PeerId) -> Self {
     PlumTree {
       topic,
+      config,
       local_node,
       lazy: HashSet::new(),
       eager: HashSet::new(),
       last_tick: Instant::now(),
-      tick_frequency: config.tick_frequency,
-      observed: ExpiringCache::new(
-        config.history_window,
-        config.tick_frequency,
-      ),
-      received: ExpiringCache::new(
-        config.history_window,
-        config.tick_frequency,
-      ),
+      observed: ExpiringCache::new(),
+      received: ExpiringCache::new(),
       out_events: VecDeque::new(),
     }
   }
@@ -104,14 +98,14 @@ impl PlumTree {
     self.received.insert(MessageRecord { hop: 0, ..message });
   }
 
-  pub fn broadcast(
+  pub fn inject_message(
     &mut self,
     peer_id: PeerId,
     id: u128,
     hop: u32,
     payload: Vec<u8>,
   ) {
-    info!(
+    debug!(
       "Plumtree broadcast message from {} with id {} [hop {}]",
       peer_id, id, hop
     );
@@ -173,11 +167,11 @@ impl PlumTree {
             action: Some(rpc::rpc::Action::Prune(rpc::Prune {})),
           },
         });
+      debug!("pruning link with {}", peer_id);
     }
   }
 
   pub fn inject_ihave(&mut self, peer_id: PeerId, id: u128, hop: u32) {
-    info!("IHAVE {:?} [hop {}] from {}", id, hop, peer_id);
     self.observed.insert(MessageInfo {
       id,
       hop,
@@ -214,11 +208,141 @@ impl PlumTree {
   }
 }
 
+impl PlumTree {
+  /// send IHAVEs to all lazy push nodes
+  fn publish_ihaves(&mut self) {
+    let time_range_begin = Instant::now() - self.config.tick_frequency;
+    let time_range_end = Instant::now();
+    let received: Vec<_> = self
+      .received
+      .iter_range(time_range_begin..time_range_end)
+      .map(|m| m.into())
+      .collect();
+
+    self.lazy.iter().for_each(|p| {
+      self
+        .out_events
+        .push_back(EpisubNetworkBehaviourAction::NotifyHandler {
+          peer_id: *p,
+          handler: NotifyHandler::Any,
+          event: rpc::Rpc {
+            topic: self.topic.clone(),
+            action: Some(rpc::rpc::Action::Ihave(rpc::IHave {
+              ihaves: received.clone(),
+            })),
+          },
+        })
+    });
+  }
+
+  /// triggered every configured tick Duration, it attemtps
+  /// to find if we are missing any messages that were not delivered
+  /// to this node by eager nodes, or the there is a much more optimal
+  /// path for messages from one of the lazy push nodes.
+  fn repair_tree(&mut self) {
+    let prune_cutoff = Instant::now() - self.config.history_window;
+
+    // remove old entries from history
+    self.observed.remove_older_than(prune_cutoff);
+    self.received.remove_older_than(prune_cutoff);
+
+    {
+      // check for messages that we were told about by lazy push peers
+      // and check if they are in the received messages. If not then it
+      // means that we have missing messages, and then we will need to
+      // graft the connection to the peer that told us about the missing
+      // message. Also we replace the eager push link if the hop count
+      // in the observed messages is significantly lower than what we
+      // received from the eager push nodes.
+      let time_range_begin = Instant::now() - (2 * self.config.tick_frequency);
+      let time_range_end = Instant::now() - self.config.tick_frequency;
+      let expected_ihaves =
+        self.observed.iter_range(time_range_begin..time_range_end);
+
+      let mut grafts = HashMap::<PeerId, Vec<u128>>::new();
+      for observed in expected_ihaves {
+        match self.received.get(&observed.key()) {
+          Some(received) => {
+            if received.hop > observed.hop
+              && (received.hop - observed.hop) as usize
+                >= self.config.hop_optimization_factor
+            {
+              debug!(
+                "path for message {} from {} is better than {} ({}:{})",
+                received.id,
+                observed.sender,
+                received.sender,
+                received.hop,
+                observed.hop
+              );
+
+              // we have the message, so no need to request it again,
+              // but the path it took to reach us is much shorter, so
+              // just graft the connection but don't ask for the message.
+              if let Entry::Vacant(v) = grafts.entry(observed.sender) {
+                // this will make this sender an active push node again,
+                // if the path indeed is faster than the old one, then
+                // this will remain eager push and the old one will be
+                // pruned, because the message will arrive from the new
+                // eager node first, otherwise, if it was just a temporary
+                // network instability, the tree structure will go back to
+                // its previous state.
+                v.insert(vec![]);
+              }
+            }
+          }
+          None => {
+            warn!(
+              "message {} was NOT received, but observed by peer {}",
+              observed.id, observed.sender
+            );
+            // we have a missing message, so we need to request it from
+            // the node we are grafting our connection to.
+            match grafts.entry(observed.sender) {
+              Entry::Vacant(v) => {
+                v.insert(vec![observed.id]);
+              }
+              Entry::Occupied(mut o) => {
+                o.get_mut().push(observed.id);
+              }
+            }
+          }
+        }
+      }
+
+      grafts.into_iter().for_each(|(p, ids)| {
+        debug!("grafting link with {}", p);
+        self
+          .out_events
+          .push_back(EpisubNetworkBehaviourAction::NotifyHandler {
+            peer_id: p,
+            handler: NotifyHandler::Any,
+            event: rpc::Rpc {
+              topic: self.topic.clone(),
+              action: Some(rpc::rpc::Action::Graft(rpc::Graft {
+                ids: ids
+                  .into_iter()
+                  .map(|id| id.to_le_bytes().to_vec())
+                  .collect(),
+              })),
+            },
+          })
+      });
+    }
+  }
+}
+
 impl Future for PlumTree {
   type Output = EpisubNetworkBehaviourAction;
 
   fn poll(mut self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
-    if Instant::now().duration_since(self.last_tick) > self.tick_frequency {
+    // start with periodic tree maintenance and 
+    // batch IHAVE advertisements to lazy nodes
+    if Instant::now().duration_since(self.last_tick)
+      > self.config.tick_frequency
+    {
+      self.publish_ihaves();
+      self.repair_tree();
       self.last_tick = Instant::now();
     }
 
