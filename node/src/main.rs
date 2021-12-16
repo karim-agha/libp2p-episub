@@ -14,7 +14,6 @@ use std::{intrinsics::transmute, mem::size_of, time::Duration};
 
 use anyhow::Result;
 use audit_node::{NodeEvent, NodeUpdate};
-use chrono::Utc;
 use futures::StreamExt;
 use libp2p::{identity, swarm::SwarmEvent, Multiaddr, PeerId};
 use libp2p_episub::{Config, Episub, EpisubEvent};
@@ -124,22 +123,16 @@ async fn main() -> Result<()> {
 
   let (msg_tx, mut msg_rx) = unbounded_channel::<Vec<u8>>();
   tokio::spawn(async move {
-    let local_peer_id = local_peer_id;
-    loop {
-      // every 5 seconds send a message to the gossip topic
-      tokio::time::sleep(Duration::from_secs(15)).await;
-      msg_tx
-        .send(
-          format!(
-            "I am {}, sending message at: {}",
-            local_peer_id,
-            Utc::now().to_rfc2822()
-          )
-          .into_bytes(),
-        )
-        .unwrap_or_else(|err| {
-          error!("periodic message thread error: {:?}", err);
-        })
+    if opts.sender {
+      loop {
+        // every 5 seconds send a message to the gossip topic
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        msg_tx
+          .send([1u8, 2, 3, 4, 5].into_iter().cycle().take(2048).collect())
+          .unwrap_or_else(|err| {
+            error!("periodic message thread error: {:?}", err);
+          })
+      }
     }
   });
 
@@ -149,7 +142,6 @@ async fn main() -> Result<()> {
       Some(event) = swarm.next() => {
         match event {
           SwarmEvent::Behaviour(b) => {
-            info!("swarm behaviour: {:?}", b);
             match b {
               EpisubEvent::Message{ topic, id, payload } => {
               info!(

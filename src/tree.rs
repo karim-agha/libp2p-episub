@@ -106,7 +106,7 @@ impl PlumTree {
     payload: Vec<u8>,
   ) {
     debug!(
-      "Plumtree broadcast message from {} with id {} [hop {}]",
+      "received message from {} with id {} [hop {}]",
       peer_id, id, hop
     );
 
@@ -143,13 +143,14 @@ impl PlumTree {
         if peer == &peer_id {
           continue;
         }
-        self
-          .out_events
-          .push_back(EpisubNetworkBehaviourAction::NotifyHandler {
+        self.out_events.push_back(
+          EpisubNetworkBehaviourAction::NotifyHandler {
             peer_id: *peer,
             handler: NotifyHandler::Any,
             event: message.clone(),
-          })
+          },
+        );
+        debug!("sending message {} to peer {}", id, peer);
       }
     } else {
       // this is a duplicate message, it means that we are
@@ -336,7 +337,7 @@ impl Future for PlumTree {
   type Output = EpisubNetworkBehaviourAction;
 
   fn poll(mut self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
-    // start with periodic tree maintenance and 
+    // start with periodic tree maintenance and
     // batch IHAVE advertisements to lazy nodes
     if Instant::now().duration_since(self.last_tick)
       > self.config.tick_frequency
