@@ -1,6 +1,10 @@
 # Libp2p-episub: Proximity Aware Epidemic PubSub for libp2p
 
-This Rust library implements a `libp2p` behaviour for efficient large-scale pub/sub protocol based on ideas in the [BRISA](https://citeseerx.ist.psu.edu/viewdoc/summary?doi=10.1.1.360.1724) paper.
+This Rust library implements a `libp2p` behaviour for efficient large-scale pub/sub protocol based on ideas the following academic papers:
+
+- HyParView: For topic-peer-membership management and node discovery
+- Epidemic Broadcast Trees: For constructing efficient broadcast trees and efficient content dessamination
+- GoCast: Gossip-Enhanced Overlay Multicast for Fast and Dependable Group Communication
 
 ## Running a topology with 201 peers:
 

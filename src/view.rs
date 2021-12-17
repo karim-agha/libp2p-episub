@@ -142,7 +142,7 @@ impl HyParView {
         self
           .out_events
           .push_back(EpisubNetworkBehaviourAction::GenerateEvent(
-            EpisubEvent::ActivePeerRemoved(random.peer_id),
+            EpisubEvent::PeerRemoved(random.peer_id),
           ));
         self.add_node_to_passive_view(random);
       }
@@ -307,7 +307,7 @@ impl HyParView {
       self
         .out_events
         .push_back(EpisubNetworkBehaviourAction::GenerateEvent(
-          EpisubEvent::ActivePeerRemoved(peer),
+          EpisubEvent::PeerRemoved(peer),
         ));
       self.active.retain(|p| p.peer_id != peer);
       debug!("disconnecting peer {}, from passive: {}", peer, !alive);
@@ -458,7 +458,7 @@ impl HyParView {
       self
         .out_events
         .push_back(EpisubNetworkBehaviourAction::GenerateEvent(
-          EpisubEvent::ActivePeerAdded(node.peer_id),
+          EpisubEvent::PeerAdded(node.peer_id),
         ));
     }
   }

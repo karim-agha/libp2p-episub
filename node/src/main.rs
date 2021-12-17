@@ -128,7 +128,7 @@ async fn main() -> Result<()> {
         // every 5 seconds send a message to the gossip topic
         tokio::time::sleep(Duration::from_secs(1)).await;
         msg_tx
-          .send([1u8, 2, 3, 4, 5].into_iter().cycle().take(2048).collect())
+          .send([1u8, 2, 3, 4, 5].into_iter().cycle().take(1024 * 800).collect())
           .unwrap_or_else(|err| {
             error!("periodic message thread error: {:?}", err);
           })
@@ -148,7 +148,7 @@ async fn main() -> Result<()> {
                 "received message {} on topic {} with payload of {} bytes",
                 id, topic, payload.len());
               }
-              EpisubEvent::ActivePeerAdded(p) => {
+              EpisubEvent::PeerAdded(p) => {
                 send_update(
                   &opts.audit,
                   NodeUpdate {
@@ -159,7 +159,7 @@ async fn main() -> Result<()> {
                 )
                 .await?;
               },
-              EpisubEvent::ActivePeerRemoved(p) => {
+              EpisubEvent::PeerRemoved(p) => {
                 send_update(
                   &opts.audit,
                   NodeUpdate {

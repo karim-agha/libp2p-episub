@@ -33,8 +33,8 @@ pub enum EpisubEvent {
   },
   Subscribed(String),
   Unsubscibed(String),
-  ActivePeerAdded(PeerId),
-  ActivePeerRemoved(PeerId),
+  PeerAdded(PeerId),
+  PeerRemoved(PeerId),
 }
 
 pub(crate) type EpisubNetworkBehaviourAction =

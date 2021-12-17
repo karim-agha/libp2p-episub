@@ -185,12 +185,12 @@ impl Future for TopicMesh {
       // can construct it can construct and repair its tree.
       match &event {
         NetworkBehaviourAction::GenerateEvent(
-          EpisubEvent::ActivePeerAdded(peer),
+          EpisubEvent::PeerAdded(peer),
         ) => {
           self.tree.inject_neighbor_up(*peer);
         }
         NetworkBehaviourAction::GenerateEvent(
-          EpisubEvent::ActivePeerRemoved(peer),
+          EpisubEvent::PeerRemoved(peer),
         ) => {
           self.tree.inject_neighbor_down(*peer);
         }
