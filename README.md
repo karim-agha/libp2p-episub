@@ -6,6 +6,8 @@ This Rust library implements a `libp2p` behaviour for efficient large-scale pub/
 - Epidemic Broadcast Trees: For constructing efficient broadcast trees and efficient content dessamination
 - GoCast: Gossip-Enhanced Overlay Multicast for Fast and Dependable Group Communication
 
+Originally [speced by @vyzo](https://github.com/libp2p/specs/blob/master/pubsub/gossipsub/episub.md) as a successor of Gossipsub
+
 ## Running a topology with 201 peers:
 
 ```
