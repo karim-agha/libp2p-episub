@@ -56,7 +56,7 @@ impl<T> Ord for Timed<T> {
 }
 
 pub struct ExpiringCache<T: Keyed + Ord> {
-  pub data: HashMap<T::Key, Arc<Timed<T>>>,
+  data: HashMap<T::Key, Arc<Timed<T>>>,
   by_time: VecDeque<Arc<Timed<T>>>,
 }
 

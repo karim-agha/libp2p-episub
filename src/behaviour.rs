@@ -134,7 +134,7 @@ impl Episub {
   ///
   /// When subscribing to a new topic, we place the topic in the pending_joins collection that
   /// will send a join request to any node we connect to, until one of the nodes responds with
-  /// another JOIN or FORWARDJOIN message.
+  /// another NEIGHBOR message.
   pub fn subscribe(&mut self, topic: String) -> bool {
     if self.topics.get(&topic).is_some() {
       debug!("Already subscribed to topic {}", topic);
@@ -325,7 +325,7 @@ impl NetworkBehaviour for Episub {
 
   /// Invoked on every message from the protocol for active connections with peers.
   /// Does basic validation only and forwards those calls to their appropriate handlers
-  /// in HyParView or MessageGraph
+  /// in HyParView or Plumtree
   fn inject_event(
     &mut self,
     peer_id: PeerId,
