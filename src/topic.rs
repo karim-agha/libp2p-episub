@@ -8,7 +8,8 @@ use crate::{
   EpisubEvent,
 };
 use futures::FutureExt;
-use libp2p::{swarm::NetworkBehaviourAction, PeerId};
+use libp2p_core::PeerId;
+use libp2p_swarm::NetworkBehaviourAction;
 use std::{
   collections::VecDeque,
   future::Future,
@@ -132,9 +133,12 @@ impl TopicMesh {
       }
       Action::Message(rpc::Message { id, hop, payload }) => {
         if let Ok(id) = id[0..16].try_into() {
-          self
-            .tree
-            .inject_message(peer_id, u128::from_le_bytes(id), hop, payload);
+          self.tree.inject_message(
+            peer_id,
+            u128::from_le_bytes(id),
+            hop,
+            payload,
+          );
         } else {
           return Err(RpcError::InvalidMessageId);
         }
@@ -184,14 +188,12 @@ impl Future for TopicMesh {
       // also notify the Plumtree about active view changes so it
       // can construct it can construct and repair its tree.
       match &event {
-        NetworkBehaviourAction::GenerateEvent(
-          EpisubEvent::PeerAdded(peer),
-        ) => {
+        NetworkBehaviourAction::GenerateEvent(EpisubEvent::PeerAdded(peer)) => {
           self.tree.inject_neighbor_up(*peer);
         }
-        NetworkBehaviourAction::GenerateEvent(
-          EpisubEvent::PeerRemoved(peer),
-        ) => {
+        NetworkBehaviourAction::GenerateEvent(EpisubEvent::PeerRemoved(
+          peer,
+        )) => {
           self.tree.inject_neighbor_down(*peer);
         }
         _ => {}

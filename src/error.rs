@@ -1,4 +1,5 @@
-use libp2p::{multiaddr, multihash, PeerId};
+use libp2p_core::PeerId;
+use multiaddr;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -31,15 +32,15 @@ pub enum RpcError {
   ImpersonatedPeer(PeerId, PeerId),
 
   #[error("Expected a 16-byte u128")]
-  InvalidMessageId
+  InvalidMessageId,
 }
 
 /// Errors associated with converting values from
 /// wire format to internal represenation
 #[derive(Debug, Error)]
 pub enum FormatError {
-  #[error("Invalid multihash: {0}")]
-  Multihash(#[from] multihash::Error),
+  #[error("Invalid multihash")]
+  Multihash,
 
   #[error("Invalid multiaddress: {0}")]
   Multiaddr(#[from] multiaddr::Error),

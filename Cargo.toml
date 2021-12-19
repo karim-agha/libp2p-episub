@@ -13,7 +13,9 @@ categories = ["network-programming", "asynchornous"]
 
 [dependencies]
 futures = "0.3.18"
-libp2p = "0.41.0"
+libp2p-core = "0.30.0"
+libp2p-swarm = "0.32.0"
+multiaddr = "0.13.0"
 tracing = "0.1.29"
 prost = "0.9"
 rand = "0.8"
@@ -23,7 +25,3 @@ unsigned-varint = { version = "0.7.0", features = ["asynchronous_codec"] }
 
 [build-dependencies]
 prost-build = "0.9"
-
-[workspace]
-members = [".", "node", "audit"]
-default-members = [".", "node", "audit"]

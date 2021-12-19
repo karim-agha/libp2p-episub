@@ -6,13 +6,12 @@ use crate::{
   handler::EpisubHandler, rpc, EpisubEvent,
 };
 use futures::Future;
-use libp2p::{
-  core::{Multiaddr, PeerId},
-  swarm::{
-    dial_opts::{DialOpts, PeerCondition},
-    NotifyHandler,
-  },
+use libp2p_core::PeerId;
+use libp2p_swarm::{
+  dial_opts::{DialOpts, PeerCondition},
+  NotifyHandler,
 };
+use multiaddr::Multiaddr;
 use rand::prelude::IteratorRandom;
 use std::{
   collections::{HashSet, VecDeque},
@@ -620,7 +619,7 @@ impl TryFrom<rpc::AddressablePeer> for AddressablePeer {
   fn try_from(value: rpc::AddressablePeer) -> Result<Self, Self::Error> {
     Ok(Self {
       peer_id: PeerId::from_bytes(value.peer_id.as_slice())
-        .map_err(FormatError::Multihash)?,
+        .map_err(|_| FormatError::Multihash)?,
       addresses: value
         .addresses
         .into_iter()

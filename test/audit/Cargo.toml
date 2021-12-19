@@ -12,7 +12,7 @@ keywords = ["peer-to-peer", "libp2p", "networking"]
 categories = ["network-programming", "asynchornous"]
 
 [dependencies]
-libp2p-episub = { path = "../" }
+libp2p-episub = { path = "../../" }
 
 libp2p = "0.41.0"
 anyhow = "1.0.51"

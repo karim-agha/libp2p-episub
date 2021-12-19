@@ -3,12 +3,10 @@ use crate::{
 };
 use asynchronous_codec::Framed;
 use futures::{Sink, StreamExt};
-use libp2p::{
-  core::{InboundUpgrade, OutboundUpgrade},
-  swarm::{
-    KeepAlive, NegotiatedSubstream, ProtocolsHandler, ProtocolsHandlerEvent,
-    ProtocolsHandlerUpgrErr, SubstreamProtocol,
-  },
+use libp2p_core::{InboundUpgrade, OutboundUpgrade};
+use libp2p_swarm::{
+  KeepAlive, NegotiatedSubstream, ProtocolsHandler, ProtocolsHandlerEvent,
+  ProtocolsHandlerUpgrErr, SubstreamProtocol,
 };
 use std::{
   collections::VecDeque,

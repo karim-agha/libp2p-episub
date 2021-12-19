@@ -12,7 +12,7 @@ keywords = ["peer-to-peer", "libp2p", "networking"]
 categories = ["network-programming", "asynchornous"]
 
 [dependencies]
-libp2p-episub = { path = "../" }
+libp2p-episub = { path = "../../" }
 audit-node = { path = "../audit" }
 
 futures = "0.3.18"

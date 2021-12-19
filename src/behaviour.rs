@@ -3,17 +3,15 @@ use crate::{
   topic::TopicMesh, view::AddressablePeer,
 };
 use futures::FutureExt;
-use libp2p::{
-  core::{
+use libp2p_core::{
     connection::{ConnectionId, ListenerId},
     ConnectedPoint, Multiaddr, PeerId,
-  },
-  multiaddr::Protocol,
-  swarm::{
+  };
+use multiaddr::Protocol;
+use libp2p_swarm::{
     CloseConnection, DialError, NetworkBehaviour, NetworkBehaviourAction,
     NotifyHandler, PollParameters,
-  },
-};
+  };
 use rand::Rng;
 use std::{
   collections::{HashMap, HashSet, VecDeque},
