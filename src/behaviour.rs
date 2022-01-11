@@ -4,14 +4,14 @@ use crate::{
 };
 use futures::FutureExt;
 use libp2p_core::{
-    connection::{ConnectionId, ListenerId},
-    ConnectedPoint, Multiaddr, PeerId,
-  };
-use multiaddr::Protocol;
+  connection::{ConnectionId, ListenerId},
+  ConnectedPoint, Multiaddr, PeerId,
+};
 use libp2p_swarm::{
-    CloseConnection, DialError, NetworkBehaviour, NetworkBehaviourAction,
-    NotifyHandler, PollParameters,
-  };
+  CloseConnection, DialError, NetworkBehaviour, NetworkBehaviourAction,
+  NotifyHandler, PollParameters,
+};
+use multiaddr::Protocol;
 use rand::Rng;
 use std::{
   collections::{HashMap, HashSet, VecDeque},
@@ -339,6 +339,15 @@ impl NetworkBehaviour for Episub {
       return;
     }
 
+    if !self.config.authorizer.allow(&event.topic, &peer_id) {
+      debug!(
+        "disconnecting peer {} because it is not authorized on topic {}",
+        &peer_id, &event.topic
+      );
+      self.force_disconnect(peer_id, connection);
+      return;
+    }
+
     trace!(
       "inject_event, peerid: {}, connection: {:?}, event: {:?}",
       peer_id,
@@ -484,7 +493,11 @@ impl Episub {
     self
       .topics
       .iter_mut()
-      .filter(|(_, v)| v.nodes().starved() && !v.nodes().is_active(&peer))
+      .filter(|(t, v)| {
+        v.nodes().starved()
+          && !v.nodes().is_active(&peer)
+          && self.config.authorizer.allow(&t, &peer)
+      })
       .for_each(|(_, v)| {
         v.initiate_join(AddressablePeer {
           peer_id: peer,

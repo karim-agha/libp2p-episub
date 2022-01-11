@@ -1,4 +1,27 @@
-use std::time::Duration;
+use libp2p_core::PeerId;
+use std::{sync::Arc, time::Duration};
+
+#[derive(Clone)]
+pub struct PeerAuthorizer(Arc<dyn Fn(&str, &PeerId) -> bool + Send + Sync>);
+
+impl PeerAuthorizer {
+  pub fn new<F>(predicate: F) -> Self
+  where
+    F: Fn(&str, &PeerId) -> bool + Send + Sync + 'static,
+  {
+    Self(Arc::new(predicate))
+  }
+
+  pub fn allow(&self, topic: &str, peer: &PeerId) -> bool {
+    self.0(topic, peer)
+  }
+}
+
+impl std::fmt::Debug for PeerAuthorizer {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_tuple("PeerAuthenticator").field(&"[impl]").finish()
+  }
+}
 
 /// Configuration paramaters for Episub
 #[derive(Debug, Clone)]
@@ -38,6 +61,24 @@ pub struct Config {
   /// messages that triggers tree optimization and replacing the
   /// eager node
   pub hop_optimization_factor: usize,
+
+  /// A predicate that decides whether a given peer is allowed to
+  /// join a topic. The default authenticator allows any peer to
+  /// join any topic.
+  ///
+  /// There exist however cases when peers need to be authenticated
+  /// before they can join the p2p topic, like for example having
+  /// its identity stored in the list of validators or banning
+  /// certain IP addresses.
+  ///
+  /// IMPORTANT: This predicate must always deterministically return
+  /// the same result on all peers in a topic. If some peers allow a
+  /// peer and others dont, then the whole network will misbehave because
+  /// peers will start banning each other for protocol violation.
+  ///
+  /// This function must be really fast because it is invoked
+  /// on every message from any peer.
+  pub authorizer: PeerAuthorizer,
 }
 
 impl Config {
@@ -73,6 +114,9 @@ impl Default for Config {
       history_window: Duration::from_secs(30),
       tick_frequency: Duration::from_millis(200),
       hop_optimization_factor: 4,
+      authorizer: PeerAuthorizer::new(|_: &str, _: &PeerId| {
+        true // allow all by default
+      }),
     }
   }
 }

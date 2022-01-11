@@ -62,5 +62,5 @@ mod view;
 
 pub use {
   behaviour::{Episub, EpisubEvent},
-  config::Config,
+  config::{Config, PeerAuthorizer},
 };

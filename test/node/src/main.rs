@@ -128,7 +128,13 @@ async fn main() -> Result<()> {
         // every 5 seconds send a message to the gossip topic
         tokio::time::sleep(Duration::from_secs(1)).await;
         msg_tx
-          .send([1u8, 2, 3, 4, 5].into_iter().cycle().take(1024 * 800).collect())
+          .send(
+            [1u8, 2, 3, 4, 5]
+              .into_iter()
+              .cycle()
+              .take(1024 * 800)
+              .collect(),
+          )
           .unwrap_or_else(|err| {
             error!("periodic message thread error: {:?}", err);
           })
