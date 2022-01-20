@@ -1,5 +1,4 @@
 use libp2p_core::PeerId;
-use multiaddr;
 use thiserror::Error;
 
 #[derive(Debug, Error)]

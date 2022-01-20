@@ -45,6 +45,8 @@
 //! }
 //! ```
 
+#[allow(clippy::module_inception)]
+
 mod rpc {
   include!(concat!(env!("OUT_DIR"), "/rpc.pb.rs"));
 }
@@ -63,4 +65,5 @@ mod view;
 pub use {
   behaviour::{Episub, EpisubEvent},
   config::{Config, PeerAuthorizer},
+  error::{EpisubHandlerError, FormatError, PublishError, RpcError},
 };

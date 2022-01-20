@@ -496,7 +496,7 @@ impl Episub {
       .filter(|(t, v)| {
         v.nodes().starved()
           && !v.nodes().is_active(&peer)
-          && self.config.authorizer.allow(&t, &peer)
+          && self.config.authorizer.allow(t, &peer)
       })
       .for_each(|(_, v)| {
         v.initiate_join(AddressablePeer {

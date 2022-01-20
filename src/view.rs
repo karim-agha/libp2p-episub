@@ -326,10 +326,8 @@ impl HyParView {
     origin: AddressablePeer,
   ) {
     let origin_peer_id = origin.peer_id;
-    let mut deduped_passive: HashSet<AddressablePeer> = nodes
-      .iter()
-      .filter_map(|p| p.clone().try_into().ok())
-      .collect();
+    let mut deduped_passive: HashSet<AddressablePeer> =
+      nodes.clone().into_iter().collect();
 
     // respond to the originator of the shuffle with the unique
     // nodes that we know about and they don't know about.
