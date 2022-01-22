@@ -213,7 +213,7 @@ impl PlumTree {
 impl PlumTree {
   /// send IHAVEs to all lazy push nodes
   fn publish_ihaves(&mut self) {
-    let time_range_begin = Instant::now() - self.config.tick_frequency;
+    let time_range_begin = Instant::now() - self.config.lazy_push_interval;
     let time_range_end = Instant::now();
     let received: Vec<_> = self
       .received
