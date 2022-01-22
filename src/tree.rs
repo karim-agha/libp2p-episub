@@ -257,7 +257,7 @@ impl PlumTree {
       // in the observed messages is significantly lower than what we
       // received from the eager push nodes.
       let time_range_begin = Instant::now() - self.config.lazy_push_interval;
-      let time_range_end = Instant::now() - self.config.tick_frequency;
+      let time_range_end = Instant::now() - 2 * self.config.tick_frequency;
       let expected_ihaves =
         self.observed.iter_range(time_range_begin..time_range_end);
 
