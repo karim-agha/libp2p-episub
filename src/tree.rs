@@ -237,17 +237,19 @@ impl PlumTree {
     });
   }
 
-  /// triggered every configured tick Duration, it attemtps
-  /// to find if we are missing any messages that were not delivered
-  /// to this node by eager nodes, or the there is a much more optimal
-  /// path for messages from one of the lazy push nodes.
-  fn repair_tree(&mut self) {
+  fn prune_history(&mut self) {
     let prune_cutoff = Instant::now() - self.config.history_window;
 
     // remove old entries from history
     self.observed.remove_older_than(prune_cutoff);
     self.received.remove_older_than(prune_cutoff);
+  }
 
+  /// triggered every configured tick Duration, it attemtps
+  /// to find if we are missing any messages that were not delivered
+  /// to this node by eager nodes, or the there is a much more optimal
+  /// path for messages from one of the lazy push nodes.
+  fn repair_tree(&mut self) {
     {
       // check for messages that we were told about by lazy push peers
       // and check if they are in the received messages. If not then it
@@ -258,8 +260,10 @@ impl PlumTree {
       // received from the eager push nodes.
       let time_range_begin = Instant::now() - self.config.lazy_push_interval;
       let time_range_end = Instant::now() - 2 * self.config.tick_frequency;
-      let expected_ihaves =
-        self.observed.iter_range(time_range_begin..time_range_end);
+      let expected_ihaves: HashSet<_> = self
+        .observed
+        .iter_range(time_range_begin..time_range_end)
+        .collect();
 
       let mut grafts = HashMap::<PeerId, Vec<u128>>::new();
       for observed in expected_ihaves {
@@ -331,6 +335,8 @@ impl PlumTree {
           })
       });
     }
+
+    self.prune_history();
   }
 }
 

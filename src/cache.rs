@@ -74,8 +74,6 @@ where
   pub fn insert(&mut self, item: T) -> bool {
     let ptr1 = Arc::new(Timed::new(item));
     let ptr2 = Arc::clone(&ptr1);
-
-    self.by_time.push_back(ptr2);
     match self.data.entry(ptr1.key()) {
       Entry::Occupied(mut o) => {
         // if the ihave has less hops for the msg than
@@ -88,6 +86,7 @@ where
       }
       Entry::Vacant(v) => {
         v.insert(ptr1);
+        self.by_time.push_back(ptr2);
         false
       }
     }
@@ -154,6 +153,12 @@ impl PartialOrd for MessageInfo {
 impl Ord for MessageInfo {
   fn cmp(&self, other: &Self) -> Ordering {
     self.hop.cmp(&other.hop)
+  }
+}
+
+impl Hash for MessageInfo {
+  fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+    self.id.hash(state);
   }
 }
 
