@@ -4,7 +4,7 @@
 
 use libp2p_core::PeerId;
 use libp2p_swarm::NotifyHandler;
-use tracing::{debug, error, warn};
+use tracing::{debug, error};
 
 use crate::{
   behaviour::EpisubNetworkBehaviourAction,
