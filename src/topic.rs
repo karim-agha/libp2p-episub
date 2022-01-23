@@ -16,7 +16,7 @@ use std::{
   pin::Pin,
   task::{Context, Poll},
 };
-use tracing::{info, warn};
+use tracing::{debug, warn};
 
 /// Represents a view of the network from one topic's perspective.
 ///
@@ -62,7 +62,7 @@ impl TopicMesh {
   }
 
   pub fn publish(&mut self, id: u128, payload: Vec<u8>) {
-    info!(
+    debug!(
       "publishing message id {} with payload len {}",
       id,
       payload.len()
