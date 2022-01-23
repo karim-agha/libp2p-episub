@@ -298,7 +298,7 @@ impl PlumTree {
             }
           }
           None => {
-            warn!(
+            debug!(
               "message {} was NOT received, but observed by peer {}",
               observed.id, observed.sender
             );
