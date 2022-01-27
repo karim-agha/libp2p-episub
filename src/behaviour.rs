@@ -245,7 +245,7 @@ impl NetworkBehaviour for Episub {
     self.peer_addresses.insert(
       *peer_id,
       match endpoint {
-        ConnectedPoint::Dialer { address } => address.clone(),
+        ConnectedPoint::Dialer { address, .. } => address.clone(),
         ConnectedPoint::Listener { send_back_addr, .. } => {
           send_back_addr.clone()
         }
